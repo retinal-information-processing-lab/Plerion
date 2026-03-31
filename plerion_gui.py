@@ -143,27 +143,6 @@ def make_status_dot(parent: tk.Widget, color: str = COLOR_DIM) -> tk.Canvas:
     return c
 
 
-def set_dot_color(dot: tk.Canvas, color: str) -> None:
-    dot.itemconfig('dot', fill=color)
-
-
-def make_file_picker_row(parent: tk.Widget, label: str, var: tk.StringVar,
-                         filetypes=None) -> ttk.Frame:
-    """Label + Entry + Browse button on one row."""
-    row = ttk.Frame(parent, style='Card.TFrame')
-    ttk.Label(row, text=label, width=22, anchor='w',
-              style='Card.TLabel').pack(side='left', padx=(6, 2))
-    entry = ttk.Entry(row, textvariable=var)
-    entry.pack(side='left', fill='x', expand=True, padx=2)
-
-    def browse():
-        path = filedialog.askopenfilename(filetypes=filetypes or [('All files', '*.*')])
-        if path:
-            var.set(path)
-
-    ttk.Button(row, text='…', width=3, command=browse).pack(side='left', padx=(2, 6))
-    return row
-
 
 def make_folder_picker_row(parent: tk.Widget, label: str, var: tk.StringVar,
                             on_select=None, initialdir: str = None) -> ttk.Frame:
