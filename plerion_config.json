@@ -1,0 +1,16 @@
+{
+  "vis_binvec_folder": "E:/VisualStim_DMD/data/binvecs/01_CommonStim",
+  "vis_bin_name": "DG_50hZ_8reps_8dir_2sT_369pixL-768x768_MEA2p.bin",
+  "vis_vec_name": "DG_20220411_50Hz_8reps_8dir_2sT.vec",
+  "vis_freq": 60.0,
+  "dh_freq": 20.0,
+  "dh_n_spots": 19,
+  "dh_bin_mode": "dark",
+  "dh_arduino_slm_port": "COM4",
+  "vdh_binvec_folder": "E:/VisualStim_DMD/data/binvecs/01_CommonStim",
+  "vdh_bin_name": "20250512_4_SWN_48pixCh_6pixShift_30Hz_MEA3.bin",
+  "vdh_vec_name": "20250512_4_SWN_48pixCh_6pixShift_30Hz_MEA3.vec",
+  "vdh_pm_name": "",
+  "vdh_freq": 20.0,
+  "vdh_arduino_slm_port": "COM4"
+}

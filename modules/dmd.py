@@ -1,0 +1,127 @@
+# Branch 1 — DMD control
+# Resolves the folder/bin/vec indices inside the binvecs tree, then launches
+# film.exe with those indices piped to stdin.  No symlinks needed.
+
+import os
+import subprocess
+import threading
+
+
+def _readdir_index(folder: str, name: str) -> int:
+    """Return the readdir index of *name* inside *folder*.
+    Uses os.listdir() without sorting to match film.exe's readdir traversal order.
+    Skips '.' and '..' as film.cpp does."""
+    entries = [e for e in os.listdir(folder) if e not in ('.', '..')]
+    return entries.index(name)
+
+
+def resolve_indices(binvecs_root: str, folder_name: str,
+                    bin_name: str, vec_name: str) -> tuple:
+    """Return (user_idx, bin_idx, vec_idx) matching film.exe's readdir order."""
+    user_idx = _readdir_index(binvecs_root, folder_name)
+
+    folder   = os.path.join(binvecs_root, folder_name)
+    bin_sub  = _find_sub(folder, ('BIN', 'Bin', 'bin'))
+    vec_sub  = _find_sub(folder, ('VEC', 'Vec', 'vec'))
+    bin_idx  = _readdir_index(os.path.join(folder, bin_sub), bin_name)
+    vec_idx  = _readdir_index(os.path.join(folder, vec_sub), vec_name)
+
+    return user_idx, bin_idx, vec_idx
+
+
+def _find_sub(folder: str, candidates: tuple) -> str:
+    for name in candidates:
+        if os.path.isdir(os.path.join(folder, name)):
+            return name
+    return candidates[0]
+
+
+def launch_film(freq_hz: float, user_idx: int, bin_idx: int, vec_idx: int,
+                params: dict, log_callback) -> subprocess.Popen:
+    """
+    Launch film.exe with stdin piped.
+    Answers in order: user_idx, bin_idx, vec_idx, freq, 'n' (no advanced).
+
+    IMPORTANT — termination rules:
+      film.cpp checks _kbhit() in its main loop — any console input during
+      projection triggers an early break.  Call stop() only after trigger
+      cessation has been confirmed by the SLM/NI-DAQ layer.
+    """
+    freq_str   = str(int(freq_hz)) if freq_hz == int(freq_hz) else f'{freq_hz:.4f}'
+    stdin_data = f'{user_idx}\n{bin_idx}\n{vec_idx}\n{freq_str}\nn\n'
+
+    exe = params['film_exe']
+    proc = subprocess.Popen(
+        [exe],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=os.path.dirname(exe),
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+    # Read stdout in background — only surface error lines to the GUI log
+    def _watch_stdout():
+        for line in proc.stdout:
+            stripped = line.rstrip()
+            if stripped and ('error' in stripped.lower() or 'press any key' in stripped.lower()):
+                log_callback(f'[film.exe] {stripped}', 'error')
+                proc.terminate()
+        proc.stdout.close()
+
+    threading.Thread(target=_watch_stdout, daemon=True).start()
+
+    # Write all prompts at once then close — no further writes during projection
+    proc.stdin.write(stdin_data)
+    proc.stdin.flush()
+    proc.stdin.close()
+
+    return proc
+
+
+def run_vdh(folder_path: str, bin_name: str, vec_name: str, freq_hz: float,
+            params: dict, log_callback) -> subprocess.Popen:
+    """VDH: resolve indices from the selected binvec folder and launch film.exe."""
+    binvecs_root = params['binvecs_root']
+    folder_name  = os.path.basename(folder_path.rstrip('/\\'))
+    user_idx, bin_idx, vec_idx = resolve_indices(
+        binvecs_root, folder_name, bin_name, vec_name)
+    log_callback(f'[DMD] {folder_name} | {bin_name} (idx {bin_idx}) '
+                 f'| {vec_name} (idx {vec_idx}) | {freq_hz} Hz')
+    proc = launch_film(freq_hz, user_idx, bin_idx, vec_idx, params, log_callback)
+    log_callback(f'[DMD] film.exe launched (PID {proc.pid})')
+    return proc
+
+
+def run_dh(n_spots: int, bin_mode: str, freq_hz: float,
+           params: dict, log_callback) -> subprocess.Popen:
+    """DH: auto-resolve files from params patterns and launch film.exe."""
+    binvecs_root = params['binvecs_root']
+    dh_folder    = os.path.basename(params['dh_bin_folder'].rstrip('/\\').rsplit('/', 1)[0]
+                                    if '/' in params['dh_bin_folder']
+                                    else params['dh_bin_folder'])
+
+    vec_name = params['dh_vec_pattern'].replace('{n_spots}', f'{n_spots:03d}')
+    # bin: pick bright or dark file from dh_bin_folder
+    bin_folder = params['dh_bin_folder']
+    bin_files  = [f for f in os.listdir(bin_folder) if f not in ('.', '..')]
+    bin_name   = next((f for f in bin_files if bin_mode.lower() in f.lower()), bin_files[0])
+
+    dh_folder_name = os.path.basename(os.path.dirname(params['dh_bin_folder']))
+    user_idx, bin_idx, vec_idx = resolve_indices(
+        binvecs_root, dh_folder_name, bin_name, vec_name)
+    log_callback(f'[DMD] DH {n_spots} spots | {bin_name} | {vec_name} | {freq_hz} Hz')
+    proc = launch_film(freq_hz, user_idx, bin_idx, vec_idx, params, log_callback)
+    log_callback(f'[DMD] film.exe launched (PID {proc.pid})')
+    return proc
+
+
+def stop(proc: subprocess.Popen) -> None:
+    """Terminate film.exe after protocol completion (trigger cessation confirmed)."""
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
