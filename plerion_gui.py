@@ -9,8 +9,8 @@ Functional logic is not implemented yet; this module contains only the UI layout
 """
 
 import os
-import re
 import sys
+import json
 import time
 import threading
 import tkinter as tk
@@ -49,7 +49,6 @@ def load_json(path: str, default: dict) -> dict:
 
 
 def save_json(path: str, data: dict) -> None:
-    import json
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
@@ -144,7 +143,6 @@ def make_status_dot(parent: tk.Widget, color: str = COLOR_DIM) -> tk.Canvas:
     return c
 
 
-
 def make_folder_picker_row(parent: tk.Widget, label: str, var: tk.StringVar,
                             on_select=None, initialdir: str = None) -> ttk.Frame:
     """Label + Entry + Browse button for folder selection."""
@@ -198,6 +196,12 @@ def make_port_row(parent: tk.Widget, label: str, port_var: tk.StringVar,
     dot = make_status_dot(row)
     dot.pack(side='left', padx=(4, 6))
     return row, combo, btn, dot
+
+
+def open_folder(folder: str) -> None:
+    """Open *folder* in the OS file explorer."""
+    if folder and os.path.isdir(folder):
+        os.startfile(folder)
 
 
 # ── console log widget ───────────────────────────────────────────────────────
@@ -445,9 +449,7 @@ class VdhTab(ttk.Frame):
     # -- callbacks ------------------------------------------------------------
 
     def _open_pm_folder(self):
-        folder = self.params.get('wavefront_folder', '')
-        if folder and os.path.isdir(folder):
-            os.startfile(folder)
+        open_folder(self.params.get('wavefront_folder', ''))
 
     def _scan_pm_folder(self):
         folder  = self.params.get('wavefront_folder', '')
@@ -508,7 +510,7 @@ class VdhTab(ttk.Frame):
             messagebox.showerror('Invalid frequency', f'"{freq_str}" is not a valid number.')
             return
         if not self._acquire_run():
-            self.console.log('[DMD] Film.exe already running.', 'warn')
+            self.console.log('[VDH] Film.exe already running.', 'warn')
             return
 
         self._save_config()
@@ -698,7 +700,7 @@ class VisualTab(ttk.Frame):
             messagebox.showerror('Missing files', 'Select a folder, BIN and VEC file.')
             return
         if not self._acquire_run():
-            self.console.log('[DMD] Film.exe already running.', 'warn')
+            self.console.log('[Visual] Film.exe already running.', 'warn')
             return
 
         self._save_config()
@@ -1047,9 +1049,7 @@ class DhTab(ttk.Frame):
     # -- callbacks ------------------------------------------------------------
 
     def _open_pm_folder(self):
-        folder = self.params.get('wavefront_folder', '')
-        if folder and os.path.isdir(folder):
-            os.startfile(folder)
+        open_folder(self.params.get('wavefront_folder', ''))
 
     def _scan_pm_folder(self):
         folder  = self.params.get('wavefront_folder', '')
@@ -1066,13 +1066,14 @@ class DhTab(ttk.Frame):
 
     def _on_spots_changed(self):
         n            = self.var_n_spots.get()
+        n_str        = f'{n:03d}'
         stim_folder  = self.params.get('dh_stim_folder', '')
         vec_sub      = self.params.get('vec_subfolder', 'VEC')
         vec_pattern  = self.params.get('dh_vec_pattern', '')
         pm_sub       = self.params.get('phasemasks_subfolder', 'Phasemasks')
         pm_pattern   = self.params.get('dh_phasemask_pattern', '')
-        self._lbl_vec.configure(text=os.path.join(stim_folder, vec_sub, vec_pattern.replace('{n_spots}', str(n))))
-        self._lbl_pm.configure( text=os.path.join(stim_folder, pm_sub, pm_pattern.replace('{n_spots}', str(n))))
+        self._lbl_vec.configure(text=os.path.join(stim_folder, vec_sub, vec_pattern.replace('{n_spots}', n_str)))
+        self._lbl_pm.configure( text=os.path.join(stim_folder, pm_sub, pm_pattern.replace('{n_spots}', n_str)))
 
     def _on_bin_mode_changed(self):
         mode        = self.var_bin_mode.get()
@@ -1094,7 +1095,7 @@ class DhTab(ttk.Frame):
         bin_mode = self.var_bin_mode.get()
 
         if not self._acquire_run():
-            self.console.log('[DMD] Film.exe already running.', 'warn')
+            self.console.log('[DH] Film.exe already running.', 'warn')
             return
 
         self._save_config()
