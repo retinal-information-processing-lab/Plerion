@@ -1,0 +1,24 @@
+{
+  // Auto-saved on each RUN and on close. Do not edit manually during a session.
+
+  // ── Visual tab ──────────────────────────────────────────────────────────────
+  "vis_binvec_folder":    "E:/VisualStim_DMD/data/binvecs/01_CommonStim", // Last used binvec folder
+  "vis_bin_name":         "DG_50hZ_8reps_8dir_2sT_369pixL-768x768_MEA2p.bin", // Last selected .bin
+  "vis_vec_name":         "DG_20220411_50Hz_8reps_8dir_2sT.vec",               // Last selected .vec
+  "vis_freq":             60.0,                                                  // Last frequency (Hz)
+
+  // ── DH tab ──────────────────────────────────────────────────────────────────
+  "dh_freq":              20.0,    // Last frequency (Hz)
+  "dh_n_spots":           12,      // Last number of holography spots
+  "dh_bin_mode":          "dark",  // Last BIN mode: 'bright' or 'dark'
+  "dh_arduino_slm_port":  "COM4",  // Last Arduino SLM COM port
+
+  // ── VDH tab ─────────────────────────────────────────────────────────────────
+  "vdh_binvec_folder":    "E:/VisualStim_DMD/data/binvecs/05_Victor", // Last used binvec folder
+  "vdh_bin_name":         "Surround_disc_1200um_500off_40x_Down.bin", // Last selected .bin
+  "vdh_vec_name":         "Surround_white_disc_delay_DH_12.vec",      // Last selected .vec
+  "vdh_pm_name":          "StimList_12spots.txt",                      // Last selected phasemask order file
+  "vdh_freq":             20.0,                                         // Last frequency (Hz)
+  "vdh_arduino_slm_port": "COM4",                                       // Last Arduino SLM COM port
+  "vdh_autopattern":      "DH_{n_spots}"                                // Last auto-select substring pattern
+}

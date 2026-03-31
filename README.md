@@ -82,7 +82,7 @@ Session state (selected files, ports, last frequency) is saved automatically to 
 DMD-only stimulation. Select a binvec folder, a `.bin` and `.vec` file, set the frequency, and click **RUN PROTOCOL**.
 
 - NI-DAQ trigger counter arms on PFI0 at launch
-- Fallout-style countdown panel shows total duration before run, then live countdown once triggers arrive
+- Countdown panel shows total duration before run, then live countdown once triggers arrive
 - Auto-stops when all triggers are played or when no trigger is received for `trigger_timeout_s` seconds
 
 ### DH — Digital Holography

@@ -1,3 +1,4 @@
 pyserial
 nidaqmx
 pandas
+jsonc-parser

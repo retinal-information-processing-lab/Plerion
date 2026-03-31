@@ -1,6 +1,10 @@
 # Branch 2 — NI-DAQ sync
 # TriggerCounter: counts rising edges on a PFI terminal (ctr0).
 # count_vec_triggers: returns the number of trigger lines in a .vec file.
+# count_spots_from_folder: infers n_spots from generated phasemask filenames.
+
+import os
+import re
 
 try:
     import nidaqmx
@@ -8,6 +12,33 @@ try:
     _NIDAQMX_OK = True
 except ImportError:
     _NIDAQMX_OK = False
+
+
+def count_spots_from_folder(folder: str, pattern: str) -> int:
+    """Count the number of unique spots in a GeneratedPhasemasks folder.
+
+    pattern uses one placeholder:
+      {n} — spot index (any number of digits, no padding assumed)
+
+    The rest of the pattern is treated as a literal match.
+    Returns the count of unique {n} values found, or 0 on error.
+
+    Example pattern: "Pattern{n}_000.algoPhp.png"
+    """
+    if not folder or not os.path.isdir(folder):
+        return 0
+    escaped = re.escape(pattern)
+    regex_str = escaped.replace(r'\{n\}', r'(\d+)')
+    try:
+        rx = re.compile(r'^' + regex_str + r'$')
+    except re.error:
+        return 0
+    unique_n = set()
+    for fname in os.listdir(folder):
+        m = rx.match(fname)
+        if m:
+            unique_n.add(m.group(1))
+    return len(unique_n)
 
 
 def count_vec_triggers(vec_path: str) -> int:

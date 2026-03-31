@@ -8,13 +8,14 @@ Two tabs:
 Functional logic is not implemented yet; this module contains only the UI layout.
 """
 
-import json
 import os
+import re
 import sys
 import time
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from jsonc_parser.parser import JsoncParser
 
 sys.path.insert(0, os.path.dirname(__file__))
 from modules import dmd, sync
@@ -35,20 +36,20 @@ FO_DIM   = '#1A5A1A'   # ready — dim phosphor
 FO_MID   = '#3A8A3A'   # armed — medium glow
 FO_ON    = '#4AFC4A'   # active — full phosphor brightness
 
-PARAMS_FILE = os.path.join(os.path.dirname(__file__), 'plerion_params.json')
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'plerion_config.json')
+PARAMS_FILE = os.path.join(os.path.dirname(__file__), 'plerion_params.jsonc')
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'plerion_config.jsonc')
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def load_json(path: str, default: dict) -> dict:
     try:
-        with open(path, 'r') as f:
-            return json.load(f)
+        return JsoncParser.parse_file(path)
     except Exception:
         return default
 
 
 def save_json(path: str, data: dict) -> None:
+    import json
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
@@ -164,19 +165,19 @@ def make_folder_picker_row(parent: tk.Widget, label: str, var: tk.StringVar,
     return row
 
 
-def scan_binvec_folder(folder: str):
-    """Return (bin_files, vec_files, pm_files) sorted lists from
-    folder/BIN, folder/VEC and folder/phasemasks."""
-    def list_sub(candidates):
-        for sub in candidates:
-            p = os.path.join(folder, sub)
-            if os.path.isdir(p):
-                return sorted(f for f in os.listdir(p) if not f.startswith('.'))
+def scan_binvec_folder(folder: str, params: dict = None):
+    """Return (bin_files, vec_files, pm_files) sorted lists using subfolder
+    names from params (bin_subfolder, vec_subfolder, phasemasks_subfolder)."""
+    p = params or {}
+    def list_dir(sub: str):
+        path = os.path.join(folder, sub)
+        if os.path.isdir(path):
+            return sorted(f for f in os.listdir(path) if not f.startswith('.'))
         return []
 
-    bin_files = list_sub(('BIN', 'Bin', 'bin'))
-    vec_files = list_sub(('VEC', 'Vec', 'vec'))
-    pm_files  = list_sub(('phasemasks', 'PhaseMasks', 'Phasemasks'))
+    bin_files = list_dir(p.get('bin_subfolder',       'BIN'))
+    vec_files = list_dir(p.get('vec_subfolder',       'VEC'))
+    pm_files  = list_dir(p.get('phasemasks_subfolder','Phasemasks'))
     return bin_files, vec_files, pm_files
 
 
@@ -251,12 +252,17 @@ class VdhTab(ttk.Frame):
 
     def _init_vars(self):
         cfg = self.config
-        self.var_binvec_folder = tk.StringVar(value=cfg.get('vdh_binvec_folder', ''))
+        self.var_binvec_folder = tk.StringVar(
+            value=cfg.get('vdh_binvec_folder',
+                          self.params.get('vdh_default_binvec_folder', '')))
         self.var_bin_name      = tk.StringVar(value=cfg.get('vdh_bin_name', ''))
         self.var_vec_name      = tk.StringVar(value=cfg.get('vdh_vec_name', ''))
         self.var_pm_name       = tk.StringVar(value=cfg.get('vdh_pm_name', ''))
         self.var_freq          = tk.StringVar(value=str(cfg.get('vdh_freq', 20.0)))
         self.var_slm_port      = tk.StringVar(value=cfg.get('vdh_arduino_slm_port', ''))
+        self.var_autopattern = tk.StringVar(
+            value=cfg.get('vdh_autopattern',
+                          self.params.get('vdh_autopattern', '_{n_spots}spots_')))
 
     def _build(self):
         self._init_vars()
@@ -323,6 +329,41 @@ class VdhTab(ttk.Frame):
         # Populate dropdowns if folder already set (restored from config)
         if self.var_binvec_folder.get():
             self._on_folder_selected(self.var_binvec_folder.get())
+
+        # Phasemask detection
+        pm_card = ttk.LabelFrame(parent, text='Phasemask detection', padding=6)
+        pm_card.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+        pm_card.columnconfigure(1, weight=1)
+
+        ttk.Label(pm_card, text='Folder:').grid(row=0, column=0, sticky='nw', padx=6, pady=2)
+        pm_folder_row = ttk.Frame(pm_card, style='Card.TFrame')
+        pm_folder_row.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
+        pm_folder_row.columnconfigure(0, weight=1)
+        self._lbl_pm_folder = ttk.Label(pm_folder_row,
+            text=self.params.get('wavefront_folder', '—'),
+            foreground=COLOR_DIM, wraplength=280, justify='left')
+        self._lbl_pm_folder.grid(row=0, column=0, sticky='w')
+        ttk.Button(pm_folder_row, text='Open', width=5,
+                   command=self._open_pm_folder).grid(row=0, column=1, padx=(4, 0))
+
+        det_row = ttk.Frame(pm_card, style='Card.TFrame')
+        det_row.grid(row=1, column=0, columnspan=2, sticky='ew', padx=6, pady=(0, 4))
+        self._lbl_pm_detected = ttk.Label(det_row, text='—', foreground=COLOR_DIM)
+        self._lbl_pm_detected.pack(side='left')
+        ttk.Button(det_row, text='Scan', width=5,
+                   command=self._scan_pm_folder).pack(side='right')
+
+        fmt_row = ttk.Frame(pm_card, style='Card.TFrame')
+        fmt_row.grid(row=2, column=0, columnspan=2, sticky='ew', padx=6, pady=2)
+        fmt_row.columnconfigure(1, weight=1)
+        ttk.Label(fmt_row, text='Format:', style='Card.TLabel').grid(
+            row=0, column=0, sticky='w', padx=(0, 6))
+        ttk.Entry(fmt_row, textvariable=self.var_autopattern).grid(
+            row=0, column=1, sticky='ew')
+        ttk.Button(fmt_row, text='Auto-select', width=10,
+                   command=self._auto_select).grid(row=0, column=2, padx=(4, 0))
+
+        self._scan_pm_folder()
 
     # -- right column ---------------------------------------------------------
 
@@ -403,8 +444,41 @@ class VdhTab(ttk.Frame):
 
     # -- callbacks ------------------------------------------------------------
 
+    def _open_pm_folder(self):
+        folder = self.params.get('wavefront_folder', '')
+        if folder and os.path.isdir(folder):
+            os.startfile(folder)
+
+    def _scan_pm_folder(self):
+        folder  = self.params.get('wavefront_folder', '')
+        pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
+        n = sync.count_spots_from_folder(folder, pattern)
+        if n == 0:
+            self._lbl_pm_detected.configure(text='0 spots found', foreground='#FF4444')
+            return
+        self._lbl_pm_detected.configure(
+            text=f'{n} spot{"s" if n > 1 else ""} detected', foreground='#00FF00')
+        self._auto_select(n)
+
+    def _auto_select(self, n: int = None):
+        if n is None:
+            folder  = self.params.get('wavefront_folder', '')
+            pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
+            n = sync.count_spots_from_folder(folder, pattern)
+        if not n:
+            return
+        substr = self.var_autopattern.get().replace('{n_spots}', str(n))
+        for fname in (self._combo_vec['values'] or []):
+            if substr in fname:
+                self.var_vec_name.set(fname)
+                break
+        for fname in (self._combo_pm['values'] or []):
+            if substr in fname:
+                self.var_pm_name.set(fname)
+                break
+
     def _on_folder_selected(self, folder: str):
-        bin_files, vec_files, pm_files = scan_binvec_folder(folder)
+        bin_files, vec_files, pm_files = scan_binvec_folder(folder, self.params)
         self._combo_bin['values'] = bin_files
         self._combo_vec['values'] = vec_files
         self._combo_pm['values']  = pm_files
@@ -602,7 +676,7 @@ class VisualTab(ttk.Frame):
         self._btn_stop.grid(row=0, column=1, sticky='ew')
 
     def _on_folder_selected(self, folder: str):
-        bin_files, vec_files, _ = scan_binvec_folder(folder)
+        bin_files, vec_files, _ = scan_binvec_folder(folder, self.params)
         self._combo_bin['values'] = bin_files
         self._combo_vec['values'] = vec_files
         if self.var_bin_name.get() not in bin_files:
@@ -685,13 +759,10 @@ class VisualTab(ttk.Frame):
         dmd.stop(self._proc)
         self.console.log('[Visual] Protocol interrupted.', 'warn')
 
-    @staticmethod
-    def _vec_path(folder: str, vec_name: str) -> str:
-        for sub in ('VEC', 'Vec', 'vec'):
-            p = os.path.join(folder, sub, vec_name)
-            if os.path.isfile(p):
-                return p
-        return ''
+    def _vec_path(self, folder: str, vec_name: str) -> str:
+        sub = self.params.get('vec_subfolder', 'VEC')
+        p = os.path.join(folder, sub, vec_name)
+        return p if os.path.isfile(p) else ''
 
     def _update_duration_preview(self, *_):
         """Show total duration in the countdown panel before a run starts."""
@@ -815,10 +886,10 @@ class DhTab(ttk.Frame):
 
     def _init_vars(self):
         cfg = self.config
-        self.var_freq     = tk.StringVar(value=str(cfg.get('dh_freq', 20.0)))
-        self.var_n_spots  = tk.IntVar(   value=cfg.get('dh_n_spots', 1))
-        self.var_bin_mode = tk.StringVar(value=cfg.get('dh_bin_mode', 'dark'))
-        self.var_slm_port = tk.StringVar(value=cfg.get('dh_arduino_slm_port', ''))
+        self.var_freq       = tk.StringVar(value=str(cfg.get('dh_freq', 20.0)))
+        self.var_n_spots    = tk.IntVar(   value=cfg.get('dh_n_spots', 1))
+        self.var_bin_mode   = tk.StringVar(value=cfg.get('dh_bin_mode', 'dark'))
+        self.var_slm_port   = tk.StringVar(value=cfg.get('dh_arduino_slm_port', ''))
 
     def _build(self):
         self._init_vars()
@@ -840,6 +911,29 @@ class DhTab(ttk.Frame):
             row=0, column=0, sticky='w', padx=6)
         ttk.Entry(freq_card, textvariable=self.var_freq, width=10).grid(
             row=0, column=1, sticky='w', padx=6, pady=4)
+        row += 1
+
+        # Phasemask auto-detection
+        pm_card = ttk.LabelFrame(content, text='Phasemask detection', padding=6)
+        pm_card.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        pm_card.columnconfigure(1, weight=1)
+
+        pm_folder_row = ttk.Frame(pm_card, style='Card.TFrame')
+        pm_folder_row.grid(row=0, column=0, columnspan=2, sticky='ew', padx=6, pady=2)
+        pm_folder_row.columnconfigure(0, weight=1)
+        self._lbl_pm_folder = ttk.Label(pm_folder_row,
+            text=self.params.get('wavefront_folder', '—'),
+            foreground=COLOR_DIM, wraplength=380, justify='left')
+        self._lbl_pm_folder.grid(row=0, column=0, sticky='w')
+        ttk.Button(pm_folder_row, text='Open', width=5,
+                   command=self._open_pm_folder).grid(row=0, column=1, padx=(4, 0))
+
+        det_row = ttk.Frame(pm_card, style='Card.TFrame')
+        det_row.grid(row=1, column=0, columnspan=2, sticky='ew', padx=6, pady=(0, 4))
+        self._lbl_pm_detected = ttk.Label(det_row, text='—', foreground=COLOR_DIM)
+        self._lbl_pm_detected.pack(side='left')
+        ttk.Button(det_row, text='Scan', width=5,
+                   command=self._scan_pm_folder).pack(side='right')
         row += 1
 
         # Spots + auto-resolve preview
@@ -948,22 +1042,43 @@ class DhTab(ttk.Frame):
 
         self._on_spots_changed()
         self._on_bin_mode_changed()
+        self._scan_pm_folder()
 
-    # -- callbacks (stubs) ----------------------------------------------------
+    # -- callbacks ------------------------------------------------------------
+
+    def _open_pm_folder(self):
+        folder = self.params.get('wavefront_folder', '')
+        if folder and os.path.isdir(folder):
+            os.startfile(folder)
+
+    def _scan_pm_folder(self):
+        folder  = self.params.get('wavefront_folder', '')
+        pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
+        n = sync.count_spots_from_folder(folder, pattern)
+        if n == 0:
+            self._lbl_pm_detected.configure(text='0 spots found', foreground='#FF4444')
+        else:
+            self._lbl_pm_detected.configure(
+                text=f'{n} spot{"s" if n > 1 else ""} detected',
+                foreground='#00FF00')
+            self.var_n_spots.set(n)
+            self._on_spots_changed()
 
     def _on_spots_changed(self):
-        n           = self.var_n_spots.get()
-        vec_pattern = self.params.get('dh_vec_pattern', '')
-        pm_pattern  = self.params.get('dh_phasemask_pattern', '')
-        vec_folder  = self.params.get('dh_vec_folder', '')
-        pm_folder   = self.params.get('dh_phasemask_order_folder', '')
-        self._lbl_vec.configure(text=os.path.join(vec_folder, vec_pattern.replace('{n_spots}', str(n))))
-        self._lbl_pm.configure( text=os.path.join(pm_folder,  pm_pattern.replace( '{n_spots}', str(n))))
+        n            = self.var_n_spots.get()
+        stim_folder  = self.params.get('dh_stim_folder', '')
+        vec_sub      = self.params.get('vec_subfolder', 'VEC')
+        vec_pattern  = self.params.get('dh_vec_pattern', '')
+        pm_sub       = self.params.get('phasemasks_subfolder', 'Phasemasks')
+        pm_pattern   = self.params.get('dh_phasemask_pattern', '')
+        self._lbl_vec.configure(text=os.path.join(stim_folder, vec_sub, vec_pattern.replace('{n_spots}', str(n))))
+        self._lbl_pm.configure( text=os.path.join(stim_folder, pm_sub, pm_pattern.replace('{n_spots}', str(n))))
 
     def _on_bin_mode_changed(self):
-        mode       = self.var_bin_mode.get()
-        bin_folder = self.params.get('dh_bin_folder', '')
-        self._lbl_bin.configure(text=f'{bin_folder}  [{mode}]')
+        mode        = self.var_bin_mode.get()
+        stim_folder = self.params.get('dh_stim_folder', '')
+        bin_sub     = self.params.get('bin_subfolder', 'BIN')
+        self._lbl_bin.configure(text=f'{os.path.join(stim_folder, bin_sub)}  [{mode}]')
 
     def _on_flash_slm(self):
         self.console.log('[DH] Flash & Connect Arduino SLM — not yet implemented', 'warn')
@@ -1104,6 +1219,7 @@ class PlerionApp(tk.Tk):
             'vdh_pm_name':          v.var_pm_name.get(),
             'vdh_freq':             float(v.var_freq.get() or 20),
             'vdh_arduino_slm_port': v.var_slm_port.get(),
+            'vdh_autopattern':      v.var_autopattern.get(),
         }
 
 

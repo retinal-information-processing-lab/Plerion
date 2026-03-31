@@ -16,24 +16,16 @@ def _readdir_index(folder: str, name: str) -> int:
 
 
 def resolve_indices(binvecs_root: str, folder_name: str,
-                    bin_name: str, vec_name: str) -> tuple:
+                    bin_name: str, vec_name: str, params: dict = None) -> tuple:
     """Return (user_idx, bin_idx, vec_idx) matching film.exe's readdir order."""
+    p        = params or {}
+    bin_sub  = p.get('bin_subfolder', 'BIN')
+    vec_sub  = p.get('vec_subfolder', 'VEC')
     user_idx = _readdir_index(binvecs_root, folder_name)
-
     folder   = os.path.join(binvecs_root, folder_name)
-    bin_sub  = _find_sub(folder, ('BIN', 'Bin', 'bin'))
-    vec_sub  = _find_sub(folder, ('VEC', 'Vec', 'vec'))
     bin_idx  = _readdir_index(os.path.join(folder, bin_sub), bin_name)
     vec_idx  = _readdir_index(os.path.join(folder, vec_sub), vec_name)
-
     return user_idx, bin_idx, vec_idx
-
-
-def _find_sub(folder: str, candidates: tuple) -> str:
-    for name in candidates:
-        if os.path.isdir(os.path.join(folder, name)):
-            return name
-    return candidates[0]
 
 
 def launch_film(freq_hz: float, user_idx: int, bin_idx: int, vec_idx: int,
@@ -86,7 +78,7 @@ def run_vdh(folder_path: str, bin_name: str, vec_name: str, freq_hz: float,
     binvecs_root = params['binvecs_root']
     folder_name  = os.path.basename(folder_path.rstrip('/\\'))
     user_idx, bin_idx, vec_idx = resolve_indices(
-        binvecs_root, folder_name, bin_name, vec_name)
+        binvecs_root, folder_name, bin_name, vec_name, params)
     log_callback(f'[DMD] {folder_name} | {bin_name} (idx {bin_idx}) '
                  f'| {vec_name} (idx {vec_idx}) | {freq_hz} Hz')
     proc = launch_film(freq_hz, user_idx, bin_idx, vec_idx, params, log_callback)
@@ -97,20 +89,17 @@ def run_vdh(folder_path: str, bin_name: str, vec_name: str, freq_hz: float,
 def run_dh(n_spots: int, bin_mode: str, freq_hz: float,
            params: dict, log_callback) -> subprocess.Popen:
     """DH: auto-resolve files from params patterns and launch film.exe."""
-    binvecs_root = params['binvecs_root']
-    dh_folder    = os.path.basename(params['dh_bin_folder'].rstrip('/\\').rsplit('/', 1)[0]
-                                    if '/' in params['dh_bin_folder']
-                                    else params['dh_bin_folder'])
+    binvecs_root   = params['binvecs_root']
+    dh_stim_folder = params['dh_stim_folder']
+    dh_folder_name = os.path.basename(dh_stim_folder.rstrip('/\\'))
 
-    vec_name = params['dh_vec_pattern'].replace('{n_spots}', f'{n_spots:03d}')
-    # bin: pick bright or dark file from dh_bin_folder
-    bin_folder = params['dh_bin_folder']
+    bin_sub    = params.get('bin_subfolder', 'BIN')
+    vec_name   = params['dh_vec_pattern'].replace('{n_spots}', f'{n_spots:03d}')
+    bin_folder = os.path.join(dh_stim_folder, bin_sub)
     bin_files  = [f for f in os.listdir(bin_folder) if f not in ('.', '..')]
     bin_name   = next((f for f in bin_files if bin_mode.lower() in f.lower()), bin_files[0])
-
-    dh_folder_name = os.path.basename(os.path.dirname(params['dh_bin_folder']))
     user_idx, bin_idx, vec_idx = resolve_indices(
-        binvecs_root, dh_folder_name, bin_name, vec_name)
+        binvecs_root, dh_folder_name, bin_name, vec_name, params)
     log_callback(f'[DMD] DH {n_spots} spots | {bin_name} | {vec_name} | {freq_hz} Hz')
     proc = launch_film(freq_hz, user_idx, bin_idx, vec_idx, params, log_callback)
     log_callback(f'[DMD] film.exe launched (PID {proc.pid})')
