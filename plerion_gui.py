@@ -1,11 +1,10 @@
 """
 plerion_gui.py — Main Tkinter GUI for Plerion.
 
-Two tabs:
-  VDH — full experiment mode (DMD + NI-DAQ + SLM)
-  DH  — digital holography simplified mode
-
-Functional logic is not implemented yet; this module contains only the UI layout.
+Tabs:
+  Visual — DMD-only stimulation
+  DH     — digital holography simplified mode
+  VDH    — full experiment mode (DMD + NI-DAQ + SLM)
 """
 
 import os
@@ -29,12 +28,12 @@ COLOR_DIM    = '#555555'
 COLOR_BTN    = '#2A2A2A'
 COLOR_ACCENT = '#2D6A9F'
 
-# ── Fallout phosphor palette (VisualTab timer panel) ─────────────────────────
-FO_BG    = '#060A06'   # near-black terminal background
-FO_OFF   = '#0D2A0D'   # idle — barely visible
-FO_DIM   = '#1A5A1A'   # ready — dim phosphor
-FO_MID   = '#3A8A3A'   # armed — medium glow
-FO_ON    = '#4AFC4A'   # active — full phosphor brightness
+# ── Fallout phosphor palette (timer panels) ───────────────────────────────────
+FO_BG  = '#060A06'   # near-black terminal background
+FO_OFF = '#0D2A0D'   # idle — barely visible
+FO_DIM = '#1A5A1A'   # ready — dim phosphor
+FO_MID = '#3A8A3A'   # armed — medium glow
+FO_ON  = '#4AFC4A'   # active — full phosphor brightness
 
 PARAMS_FILE = os.path.join(os.path.dirname(__file__), 'plerion_params.jsonc')
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'plerion_config.jsonc')
@@ -204,6 +203,203 @@ def open_folder(folder: str) -> None:
         os.startfile(folder)
 
 
+# ── shared timer/trigger mixin ───────────────────────────────────────────────
+
+class _StimTimerMixin:
+    """NI-DAQ trigger polling + Fallout timer panel shared by all three tabs.
+
+    Subclass requirements:
+      - self.params, self.console must exist before _init_timer_state() is called
+      - self._tab_prefix (class attr) used in log messages, e.g. '[DH]'
+      - override _vec_path() → str  (absolute path to active .vec file, or '')
+      - call _init_timer_state() in __init__
+      - call _build_sci_panel(parent) inside the layout builder
+      - add var traces → _update_duration_preview after building the sci panel
+    """
+
+    _tab_prefix = '[?]'
+
+    def _init_timer_state(self):
+        self._proc                = None
+        self._counter             = None
+        self._poll_id             = None
+        self._polling             = False
+        self._stim_started        = False
+        self._total_triggers      = 0
+        self._freq_hz             = 0.0
+        self._last_trigger_count  = 0
+        self._last_trigger_time   = 0.0
+
+    def _build_sci_panel(self, parent) -> tk.Frame:
+        """Build and return the Fallout phosphor timer panel inside *parent*."""
+        sci = tk.Frame(parent, bg=FO_BG, padx=10, pady=8)
+        sci.columnconfigure(0, weight=1)
+
+        self._lbl_status = tk.Label(sci, text='[ IDLE ]',
+            font=('Consolas', 8, 'bold'), fg=FO_OFF, bg=FO_BG, anchor='w')
+        self._lbl_status.grid(row=0, column=0, sticky='ew')
+
+        self._lbl_countdown = tk.Label(sci, text='--:--',
+            font=('Consolas', 28, 'bold'), fg=FO_OFF, bg=FO_BG, anchor='center')
+        self._lbl_countdown.grid(row=1, column=0, sticky='ew', pady=(2, 4))
+
+        self._progressbar = ttk.Progressbar(sci, mode='determinate',
+                                            maximum=100, value=0)
+        self._progressbar.grid(row=2, column=0, sticky='ew', pady=(0, 4))
+
+        self._lbl_triggers = tk.Label(sci, text='',
+            font=('Consolas', 8), fg=FO_OFF, bg=FO_BG, anchor='w')
+        self._lbl_triggers.grid(row=3, column=0, sticky='ew')
+
+        return sci
+
+    def _vec_path(self) -> str:
+        raise NotImplementedError
+
+    def _update_duration_preview(self, *_):
+        """Show total duration in the timer panel before a run starts."""
+        if not hasattr(self, '_lbl_countdown') or self._polling:
+            return
+        try:
+            freq_hz = float(self.var_freq.get())
+            if freq_hz <= 0:
+                raise ValueError
+        except (ValueError, tk.TclError):
+            self._lbl_countdown.configure(text='--:--', fg=FO_OFF)
+            self._lbl_triggers.configure(text='')
+            self._lbl_status.configure(text='[ IDLE ]', fg=FO_OFF)
+            return
+        vec_path = self._vec_path()
+        if not vec_path:
+            self._lbl_countdown.configure(text='--:--', fg=FO_OFF)
+            self._lbl_triggers.configure(text='')
+            self._lbl_status.configure(text='[ IDLE ]', fg=FO_OFF)
+            return
+        try:
+            total = sync.count_vec_triggers(vec_path)
+        except Exception:
+            self._lbl_countdown.configure(text='--:--', fg=FO_OFF)
+            self._lbl_triggers.configure(text='')
+            return
+        total_secs = total / freq_hz
+        self._lbl_status.configure(text='[ READY ]', fg=FO_DIM)
+        self._lbl_countdown.configure(text=_fmt_countdown(total_secs), fg=FO_DIM)
+        self._lbl_triggers.configure(
+            text=f'{total} triggers  ·  {_fmt_remaining(total_secs)}', fg=FO_DIM)
+
+    def _arm_and_start(self, freq_hz: float):
+        """Count vec triggers, arm NI-DAQ counter, start polling."""
+        total = 0
+        vec_path = self._vec_path()
+        if vec_path:
+            try:
+                total = sync.count_vec_triggers(vec_path)
+            except Exception as e:
+                self.console.log(f'{self._tab_prefix} Cannot read vec: {e}', 'warn')
+
+        nidaq   = self.params.get('nidaq', {})
+        device  = nidaq.get('device', 'Dev1')
+        pfi_idx = nidaq.get('pfi_clock', 0)
+        try:
+            self._counter = sync.TriggerCounter(device, pfi_idx)
+            self.console.log(
+                f'{self._tab_prefix} NI-DAQ trigger counter armed ({device}/PFI{pfi_idx})')
+        except Exception as e:
+            self._counter = None
+            self.console.log(f'{self._tab_prefix} NI-DAQ counter unavailable: {e}', 'warn')
+
+        self._total_triggers     = total
+        self._freq_hz            = freq_hz
+        self._stim_started       = False
+        self._last_trigger_count = 0
+        self._last_trigger_time  = 0.0
+        self._polling            = True
+        self._poll_progress()
+
+    def _poll_progress(self):
+        if not self._polling:
+            return
+        count = 0
+        if self._counter:
+            try:
+                count = self._counter.read()
+            except Exception:
+                pass
+
+        if count > 0 and not self._stim_started:
+            self._stim_started      = True
+            self._last_trigger_time = time.time()
+            self.console.log(f'{self._tab_prefix} >> STIM STARTED', 'info')
+            # _last_trigger_count stays at 0 so the advance block below
+            # processes all triggers from 0 to count on this same poll
+
+        total     = self._total_triggers
+        remaining = max(0, total - count)
+        secs_left = remaining / self._freq_hz if self._freq_hz > 0 else 0
+        pct       = min(100.0, count / total * 100) if total > 0 else 0
+
+        self._progressbar['value'] = pct
+
+        if count > 0:
+            self._lbl_status.configure(text='[ ACTIVE ]', fg=FO_ON)
+            self._lbl_countdown.configure(text=_fmt_countdown(secs_left), fg=FO_ON)
+            self._lbl_triggers.configure(text=f'{count:>6} / {total}', fg=FO_ON)
+        else:
+            total_secs = total / self._freq_hz if self._freq_hz > 0 else 0
+            self._lbl_status.configure(text='[ ARMED ]', fg=FO_MID)
+            self._lbl_countdown.configure(text=_fmt_countdown(total_secs), fg=FO_MID)
+            self._lbl_triggers.configure(text=f'waiting  ·  {total} triggers', fg=FO_MID)
+
+        if self._stim_started:
+            if count > self._last_trigger_count:
+                try:
+                    self._on_trigger_advance(self._last_trigger_count, count)
+                except Exception as e:
+                    self.console.log(f'{self._tab_prefix} trigger advance error: {e}', 'error')
+                self._last_trigger_count = count
+                self._last_trigger_time  = time.time()
+
+            if total > 0 and count >= total:
+                self._lbl_status.configure(text='[ COMPLETE ]', fg=FO_ON)
+                self._lbl_countdown.configure(text='00:00', fg=FO_ON)
+                self.console.log(f'{self._tab_prefix} ■ STIM COMPLETE', 'info')
+                dmd.stop(getattr(self, '_proc', None))
+                return
+
+            timeout = self.params.get('trigger_timeout_s', 10)
+            if (time.time() - self._last_trigger_time) > timeout:
+                self.console.log(
+                    f'{self._tab_prefix} ■ No trigger for {timeout}s — stopping', 'warn')
+                dmd.stop(getattr(self, '_proc', None))
+                return
+
+        self._poll_id = self.after(1000, self._poll_progress)
+
+    def _on_trigger_advance(self, old_count: int, new_count: int):
+        """Called when new triggers are detected. Override in subclasses."""
+        pass
+
+    def _on_stim_reset(self):
+        """Called at end of _reset_progress. Override in subclasses."""
+        pass
+
+    def _reset_progress(self):
+        self._polling      = False
+        self._stim_started = False
+        if self._poll_id:
+            self.after_cancel(self._poll_id)
+            self._poll_id = None
+        if hasattr(self, '_progressbar'):
+            self._progressbar['value'] = 0
+        self._on_stim_reset()
+        self._update_duration_preview()
+
+    def _close_counter(self):
+        if self._counter:
+            self._counter.close()
+            self._counter = None
+
+
 # ── console log widget ───────────────────────────────────────────────────────
 
 class ConsoleLog(tk.Text):
@@ -240,329 +436,23 @@ class ConsoleLog(tk.Text):
         self.config(state='disabled')
 
 
-# ── VDH tab ──────────────────────────────────────────────────────────────────
-
-class VdhTab(ttk.Frame):
-    def __init__(self, parent, console: ConsoleLog, params: dict, config: dict,
-                 save_config=None, acquire_run=None, release_run=None):
-        super().__init__(parent)
-        self.console       = console
-        self.params        = params
-        self.config        = config
-        self._save_config  = save_config  or (lambda: None)
-        self._acquire_run  = acquire_run  or (lambda: True)
-        self._release_run  = release_run  or (lambda: None)
-        self._build()
-
-    def _init_vars(self):
-        cfg = self.config
-        self.var_binvec_folder = tk.StringVar(
-            value=cfg.get('vdh_binvec_folder',
-                          self.params.get('vdh_default_binvec_folder', '')))
-        self.var_bin_name      = tk.StringVar(value=cfg.get('vdh_bin_name', ''))
-        self.var_vec_name      = tk.StringVar(value=cfg.get('vdh_vec_name', ''))
-        self.var_pm_name       = tk.StringVar(value=cfg.get('vdh_pm_name', ''))
-        self.var_freq          = tk.StringVar(value=str(cfg.get('vdh_freq', 20.0)))
-        self.var_slm_port      = tk.StringVar(value=cfg.get('vdh_arduino_slm_port', ''))
-        self.var_autopattern = tk.StringVar(
-            value=cfg.get('vdh_autopattern',
-                          self.params.get('vdh_autopattern', '_{n_spots}spots_')))
-
-    def _build(self):
-        self._init_vars()
-        self.configure(style='TFrame')
-        self.columnconfigure(0, weight=1, minsize=360)
-        self.columnconfigure(1, weight=1, minsize=340)
-        self.rowconfigure(0, weight=1)
-
-        left  = ttk.Frame(self, padding=8)
-        right = ttk.Frame(self, padding=8)
-        left.grid( row=0, column=0, sticky='nsew')
-        right.grid(row=0, column=1, sticky='nsew')
-
-        self._build_left(left)
-        self._build_right(right)
-
-    # -- left column ----------------------------------------------------------
-
-    def _build_left(self, parent):
-        parent.columnconfigure(0, weight=1)
-
-        files_card = ttk.LabelFrame(parent, text='Files', padding=6)
-        files_card.grid(row=0, column=0, sticky='ew', pady=(0, 8))
-        files_card.columnconfigure(0, weight=1)
-
-        # Binvec folder picker
-        folder_row = make_folder_picker_row(
-            files_card, 'Binvec folder',
-            self.var_binvec_folder,
-            on_select=self._on_folder_selected,
-            initialdir=self.params.get('binvecs_root', '/'))
-        folder_row.grid(row=0, column=0, sticky='ew', pady=2)
-
-        # BIN dropdown
-        bin_row = ttk.Frame(files_card, style='Card.TFrame')
-        bin_row.grid(row=1, column=0, sticky='ew', pady=2)
-        bin_row.columnconfigure(1, weight=1)
-        ttk.Label(bin_row, text='.bin file', width=22, anchor='w',
-                  style='Card.TLabel').grid(row=0, column=0, padx=(6, 2))
-        self._combo_bin = ttk.Combobox(bin_row, textvariable=self.var_bin_name,
-                                       state='readonly')
-        self._combo_bin.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
-
-        # VEC dropdown
-        vec_row = ttk.Frame(files_card, style='Card.TFrame')
-        vec_row.grid(row=2, column=0, sticky='ew', pady=2)
-        vec_row.columnconfigure(1, weight=1)
-        ttk.Label(vec_row, text='.vec file', width=22, anchor='w',
-                  style='Card.TLabel').grid(row=0, column=0, padx=(6, 2))
-        self._combo_vec = ttk.Combobox(vec_row, textvariable=self.var_vec_name,
-                                       state='readonly')
-        self._combo_vec.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
-
-        # Phase mask dropdown
-        pm_row = ttk.Frame(files_card, style='Card.TFrame')
-        pm_row.grid(row=3, column=0, sticky='ew', pady=2)
-        pm_row.columnconfigure(1, weight=1)
-        ttk.Label(pm_row, text='Phase mask', width=22, anchor='w',
-                  style='Card.TLabel').grid(row=0, column=0, padx=(6, 2))
-        self._combo_pm = ttk.Combobox(pm_row, textvariable=self.var_pm_name,
-                                      state='readonly')
-        self._combo_pm.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
-
-        # Populate dropdowns if folder already set (restored from config)
-        if self.var_binvec_folder.get():
-            self._on_folder_selected(self.var_binvec_folder.get())
-
-        # Phasemask detection
-        pm_card = ttk.LabelFrame(parent, text='Phasemask detection', padding=6)
-        pm_card.grid(row=1, column=0, sticky='ew', pady=(0, 8))
-        pm_card.columnconfigure(1, weight=1)
-
-        ttk.Label(pm_card, text='Folder:').grid(row=0, column=0, sticky='nw', padx=6, pady=2)
-        pm_folder_row = ttk.Frame(pm_card, style='Card.TFrame')
-        pm_folder_row.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
-        pm_folder_row.columnconfigure(0, weight=1)
-        self._lbl_pm_folder = ttk.Label(pm_folder_row,
-            text=self.params.get('wavefront_folder', '—'),
-            foreground=COLOR_DIM, wraplength=280, justify='left')
-        self._lbl_pm_folder.grid(row=0, column=0, sticky='w')
-        ttk.Button(pm_folder_row, text='Open', width=5,
-                   command=self._open_pm_folder).grid(row=0, column=1, padx=(4, 0))
-
-        det_row = ttk.Frame(pm_card, style='Card.TFrame')
-        det_row.grid(row=1, column=0, columnspan=2, sticky='ew', padx=6, pady=(0, 4))
-        self._lbl_pm_detected = ttk.Label(det_row, text='—', foreground=COLOR_DIM)
-        self._lbl_pm_detected.pack(side='left')
-        ttk.Button(det_row, text='Scan', width=5,
-                   command=self._scan_pm_folder).pack(side='right')
-
-        fmt_row = ttk.Frame(pm_card, style='Card.TFrame')
-        fmt_row.grid(row=2, column=0, columnspan=2, sticky='ew', padx=6, pady=2)
-        fmt_row.columnconfigure(1, weight=1)
-        ttk.Label(fmt_row, text='Format:', style='Card.TLabel').grid(
-            row=0, column=0, sticky='w', padx=(0, 6))
-        ttk.Entry(fmt_row, textvariable=self.var_autopattern).grid(
-            row=0, column=1, sticky='ew')
-        ttk.Button(fmt_row, text='Auto-select', width=10,
-                   command=self._auto_select).grid(row=0, column=2, padx=(4, 0))
-
-        self._scan_pm_folder()
-
-    # -- right column ---------------------------------------------------------
-
-    def _build_right(self, parent):
-        parent.columnconfigure(0, weight=1)
-
-        # Frequency
-        freq_card = ttk.LabelFrame(parent, text='Frequency', padding=6)
-        freq_card.grid(row=0, column=0, sticky='ew', pady=(0, 8))
-        freq_card.columnconfigure(1, weight=1)
-        ttk.Label(freq_card, text='Rate (Hz):').grid(
-            row=0, column=0, sticky='w', padx=6)
-        ttk.Entry(freq_card, textvariable=self.var_freq, width=10).grid(
-            row=0, column=1, sticky='w', padx=6, pady=4)
-
-        # Hardware
-        hw_card = ttk.LabelFrame(parent, text='Hardware', padding=6)
-        hw_card.grid(row=1, column=0, sticky='ew', pady=(0, 8))
-        hw_card.columnconfigure(0, weight=1)
-
-        slm_row, self._combo_slm, self._btn_slm, self._dot_slm = make_port_row(
-            hw_card, 'Arduino SLM',
-            self.var_slm_port,
-            'FLASH & CONNECT',
-            self._on_flash_slm,
-        )
-        slm_row.grid(row=0, column=0, sticky='ew', pady=2)
-
-        nidaq_row = ttk.Frame(hw_card, style='Card.TFrame')
-        nidaq_row.grid(row=1, column=0, sticky='ew', pady=2)
-        ttk.Label(nidaq_row, text='NI-DAQ', width=14, anchor='w',
-                  style='Card.TLabel').pack(side='left', padx=(6, 4))
-        self._dot_nidaq = make_status_dot(nidaq_row)
-        self._dot_nidaq.pack(side='left')
-        ttk.Label(nidaq_row, text='not armed', style='Card.TLabel',
-                  foreground=COLOR_DIM).pack(side='left', padx=6)
-
-        tcp_row = ttk.Frame(hw_card, style='Card.TFrame')
-        tcp_row.grid(row=2, column=0, sticky='ew', pady=2)
-        ttk.Label(tcp_row, text='TCP WaveFront', width=14, anchor='w',
-                  style='Card.TLabel').pack(side='left', padx=(6, 4))
-        self._dot_tcp = make_status_dot(tcp_row)
-        self._dot_tcp.pack(side='left')
-        ttk.Label(tcp_row, text='not connected', style='Card.TLabel',
-                  foreground=COLOR_DIM).pack(side='left', padx=6)
-
-        # Progress
-        prog_card = ttk.Frame(parent, padding=4)
-        prog_card.grid(row=2, column=0, sticky='ew', pady=(0, 4))
-        prog_card.columnconfigure(0, weight=1)
-        self._progressbar = ttk.Progressbar(prog_card, mode='determinate',
-                                            maximum=100, value=0)
-        self._progressbar.grid(row=0, column=0, sticky='ew', pady=(0, 2))
-        self._lbl_progress = ttk.Label(prog_card, text='—', foreground=COLOR_DIM)
-        self._lbl_progress.grid(row=1, column=0, sticky='w')
-
-        # RUN / STOP buttons
-        btn_frame = ttk.Frame(parent)
-        btn_frame.grid(row=3, column=0, sticky='ew', pady=(4, 0))
-        btn_frame.columnconfigure(0, weight=3)
-        btn_frame.columnconfigure(1, weight=1)
-
-        self._btn_run = tk.Button(
-            btn_frame, text='RUN PROTOCOL', command=self._on_run,
-            bg='#1A4A1A', fg='#00FF00',
-            activebackground='#2A6A2A', activeforeground='#00FF00',
-            font=('Consolas', 12, 'bold'), relief='flat', bd=0, pady=8,
-        )
-        self._btn_run.grid(row=0, column=0, sticky='ew', padx=(0, 4))
-
-        self._btn_stop = tk.Button(
-            btn_frame, text='STOP', command=self._on_stop,
-            bg='#2A2A2A', fg='#666666', state='disabled',
-            activebackground='#6A2A2A', activeforeground='#FF4444',
-            font=('Consolas', 12, 'bold'), relief='flat', bd=0, pady=8,
-        )
-        self._btn_stop.grid(row=0, column=1, sticky='ew')
-
-    # -- callbacks ------------------------------------------------------------
-
-    def _open_pm_folder(self):
-        open_folder(self.params.get('wavefront_folder', ''))
-
-    def _scan_pm_folder(self):
-        folder  = self.params.get('wavefront_folder', '')
-        pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
-        n = sync.count_spots_from_folder(folder, pattern)
-        if n == 0:
-            self._lbl_pm_detected.configure(text='0 spots found', foreground='#FF4444')
-            return
-        self._lbl_pm_detected.configure(
-            text=f'{n} spot{"s" if n > 1 else ""} detected', foreground='#00FF00')
-        self._auto_select(n)
-
-    def _auto_select(self, n: int = None):
-        if n is None:
-            folder  = self.params.get('wavefront_folder', '')
-            pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
-            n = sync.count_spots_from_folder(folder, pattern)
-        if not n:
-            return
-        substr = self.var_autopattern.get().replace('{n_spots}', str(n))
-        for fname in (self._combo_vec['values'] or []):
-            if substr in fname:
-                self.var_vec_name.set(fname)
-                break
-        for fname in (self._combo_pm['values'] or []):
-            if substr in fname:
-                self.var_pm_name.set(fname)
-                break
-
-    def _on_folder_selected(self, folder: str):
-        bin_files, vec_files, pm_files = scan_binvec_folder(folder, self.params)
-        self._combo_bin['values'] = bin_files
-        self._combo_vec['values'] = vec_files
-        self._combo_pm['values']  = pm_files
-        # Keep current selection if still valid, else pick first
-        if self.var_bin_name.get() not in bin_files:
-            self.var_bin_name.set(bin_files[0] if bin_files else '')
-        if self.var_vec_name.get() not in vec_files:
-            self.var_vec_name.set(vec_files[0] if vec_files else '')
-        if self.var_pm_name.get() not in pm_files:
-            self.var_pm_name.set(pm_files[0] if pm_files else '')
-
-    def _on_flash_slm(self):
-        self.console.log('[VDH] Flash & Connect Arduino SLM — not yet implemented', 'warn')
-
-    def _on_run(self):
-        folder   = self.var_binvec_folder.get()
-        bin_name = self.var_bin_name.get()
-        vec_name = self.var_vec_name.get()
-        freq_str = self.var_freq.get()
-
-        if not folder or not bin_name or not vec_name:
-            messagebox.showerror('Missing files', 'Select a binvec folder, a BIN and a VEC file.')
-            return
-        try:
-            freq_hz = float(freq_str)
-        except ValueError:
-            messagebox.showerror('Invalid frequency', f'"{freq_str}" is not a valid number.')
-            return
-        if not self._acquire_run():
-            self.console.log('[VDH] Film.exe already running.', 'warn')
-            return
-
-        self._save_config()
-        self._btn_run.configure(text='RUNNING…', bg='#3A3A3A')
-        self._btn_stop.configure(state='normal', bg='#4A1A1A', fg='#FF4444')
-
-        def _run():
-            try:
-                self._proc = dmd.run_vdh(
-                    folder, bin_name, vec_name, freq_hz,
-                    self.params,
-                    lambda msg, lvl='info': self.after(0, lambda m=msg, l=lvl: self.console.log(m, l)),
-                )
-                self._proc.wait()
-                if self._proc.returncode not in (0, -1, 1):
-                    self.after(0, lambda: self.console.log(
-                        f'[DMD] film.exe unexpectedly terminated (code {self._proc.returncode})', 'warn'))
-            except Exception as e:
-                self.after(0, lambda: self.console.log(f'[DMD] ERROR: {e}', 'error'))
-            finally:
-                self.after(0, self._release_run)
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _on_stop(self):
-        dmd.stop(getattr(self, '_proc', None))
-        self.console.log('[VDH] Protocol interrupted.', 'warn')
-
-
 # ── Visual tab ───────────────────────────────────────────────────────────────
 
-class VisualTab(ttk.Frame):
-    """Visual-only tab: DMD stimulation with no SLM/NI-DAQ."""
+class VisualTab(_StimTimerMixin, ttk.Frame):
+    """Visual-only tab: DMD stimulation with no SLM."""
+
+    _tab_prefix = '[Visual]'
 
     def __init__(self, parent, console: ConsoleLog, params: dict, config: dict,
                  save_config=None, acquire_run=None, release_run=None):
-        super().__init__(parent)
+        ttk.Frame.__init__(self, parent)
         self.console      = console
         self.params       = params
         self.config       = config
-        self._proc                = None
-        self._counter             = None
-        self._poll_id             = None
-        self._polling             = False
-        self._stim_started        = False
-        self._total_triggers      = 0
-        self._freq_hz             = 0.0
-        self._last_trigger_count  = 0
-        self._last_trigger_time   = 0.0
         self._save_config = save_config  or (lambda: None)
         self._acquire_run = acquire_run  or (lambda: True)
         self._release_run = release_run  or (lambda: None)
+        self._init_timer_state()
         self._build()
 
     def _init_vars(self):
@@ -636,25 +526,8 @@ class VisualTab(ttk.Frame):
         ttk.Entry(freq_card, textvariable=self.var_freq, width=10).grid(
             row=0, column=1, sticky='w', padx=6, pady=4)
 
-        sci = tk.Frame(parent, bg=FO_BG, padx=10, pady=8)
+        sci = self._build_sci_panel(parent)
         sci.grid(row=1, column=0, sticky='ew', pady=(0, 8))
-        sci.columnconfigure(0, weight=1)
-
-        self._lbl_status = tk.Label(sci, text='[ IDLE ]',
-            font=('Consolas', 8, 'bold'), fg=FO_OFF, bg=FO_BG, anchor='w')
-        self._lbl_status.grid(row=0, column=0, sticky='ew')
-
-        self._lbl_countdown = tk.Label(sci, text='--:--',
-            font=('Consolas', 28, 'bold'), fg=FO_OFF, bg=FO_BG, anchor='center')
-        self._lbl_countdown.grid(row=1, column=0, sticky='ew', pady=(2, 4))
-
-        self._progressbar = ttk.Progressbar(sci, mode='determinate',
-                                            maximum=100, value=0)
-        self._progressbar.grid(row=2, column=0, sticky='ew', pady=(0, 4))
-
-        self._lbl_triggers = tk.Label(sci, text='',
-            font=('Consolas', 8), fg=FO_OFF, bg=FO_BG, anchor='w')
-        self._lbl_triggers.grid(row=3, column=0, sticky='ew')
 
         btn_frame = ttk.Frame(parent)
         btn_frame.grid(row=2, column=0, sticky='ew', pady=(4, 0))
@@ -676,6 +549,15 @@ class VisualTab(ttk.Frame):
             font=('Consolas', 12, 'bold'), relief='flat', bd=0, pady=8,
         )
         self._btn_stop.grid(row=0, column=1, sticky='ew')
+
+    def _vec_path(self) -> str:
+        folder   = self.var_binvec_folder.get()
+        vec_name = self.var_vec_name.get()
+        if not folder or not vec_name:
+            return ''
+        sub = self.params.get('vec_subfolder', 'VEC')
+        p = os.path.join(folder, sub, vec_name)
+        return p if os.path.isfile(p) else ''
 
     def _on_folder_selected(self, folder: str):
         bin_files, vec_files, _ = scan_binvec_folder(folder, self.params)
@@ -706,35 +588,7 @@ class VisualTab(ttk.Frame):
         self._save_config()
         self._btn_run.configure(text='RUNNING…', bg='#3A3A3A')
         self._btn_stop.configure(state='normal', bg='#4A1A1A', fg='#FF4444')
-
-        # Count total triggers from vec file
-        vec_path = self._vec_path(folder, vec_name)
-        total = 0
-        if vec_path:
-            try:
-                total = sync.count_vec_triggers(vec_path)
-            except Exception as e:
-                self.console.log(f'[Visual] Cannot read vec: {e}', 'warn')
-
-        # Arm NI-DAQ trigger counter
-        nidaq   = self.params.get('nidaq', {})
-        device  = nidaq.get('device', 'Dev1')
-        pfi_idx = nidaq.get('pfi_clock', 0)
-        try:
-            self._counter = sync.TriggerCounter(device, pfi_idx)
-            self.console.log(f'[Visual] NI-DAQ trigger counter armed ({device}/PFI{pfi_idx})')
-        except Exception as e:
-            self._counter = None
-            self.console.log(f'[Visual] NI-DAQ counter unavailable: {e}', 'warn')
-
-        # Start progress polling
-        self._total_triggers     = total
-        self._freq_hz            = freq_hz
-        self._stim_started       = False
-        self._last_trigger_count = 0
-        self._last_trigger_time  = 0.0
-        self._polling            = True
-        self._poll_progress()
+        self._arm_and_start(freq_hz)
 
         def _run():
             try:
@@ -748,11 +602,9 @@ class VisualTab(ttk.Frame):
                     self.after(0, lambda: self.console.log(
                         f'[DMD] film.exe unexpectedly closed (code {self._proc.returncode})', 'warn'))
             except Exception as e:
-                self.after(0, lambda: self.console.log(f'[DMD] ERROR: {e}', 'error'))
+                self.after(0, lambda: self.console.log(f'[Visual] ERROR: {e}', 'error'))
             finally:
-                if self._counter:
-                    self._counter.close()
-                    self._counter = None
+                self._close_counter()
                 self.after(0, self._release_run)
 
         threading.Thread(target=_run, daemon=True).start()
@@ -761,163 +613,69 @@ class VisualTab(ttk.Frame):
         dmd.stop(self._proc)
         self.console.log('[Visual] Protocol interrupted.', 'warn')
 
-    def _vec_path(self, folder: str, vec_name: str) -> str:
-        sub = self.params.get('vec_subfolder', 'VEC')
-        p = os.path.join(folder, sub, vec_name)
-        return p if os.path.isfile(p) else ''
-
-    def _update_duration_preview(self, *_):
-        """Show total duration in the countdown panel before a run starts."""
-        if not hasattr(self, '_lbl_countdown') or self._polling:
-            return
-        folder   = self.var_binvec_folder.get()
-        vec_name = self.var_vec_name.get()
-        try:
-            freq_hz = float(self.var_freq.get())
-            if freq_hz <= 0:
-                raise ValueError
-        except (ValueError, tk.TclError):
-            self._lbl_countdown.configure(text='--:--', fg=FO_OFF)
-            self._lbl_triggers.configure(text='')
-            self._lbl_status.configure(text='[ IDLE ]', fg=FO_OFF)
-            return
-        if not folder or not vec_name:
-            self._lbl_countdown.configure(text='--:--', fg=FO_OFF)
-            self._lbl_triggers.configure(text='')
-            return
-        vec_path = self._vec_path(folder, vec_name)
-        if not vec_path:
-            self._lbl_countdown.configure(text='--:--', fg=FO_OFF)
-            self._lbl_triggers.configure(text='')
-            return
-        try:
-            total = sync.count_vec_triggers(vec_path)
-        except Exception:
-            self._lbl_countdown.configure(text='--:--', fg=FO_OFF)
-            self._lbl_triggers.configure(text='')
-            return
-        total_secs = total / freq_hz
-        self._lbl_status.configure(text='[ READY ]', fg=FO_DIM)
-        self._lbl_countdown.configure(text=_fmt_countdown(total_secs), fg=FO_DIM)
-        self._lbl_triggers.configure(
-            text=f'{total} triggers  ·  {_fmt_remaining(total_secs)}', fg=FO_DIM)
-
-    def _poll_progress(self):
-        if not self._polling:
-            return
-        count = 0
-        if self._counter:
-            try:
-                count = self._counter.read()
-            except Exception:
-                pass
-
-        # First trigger detection
-        if count > 0 and not self._stim_started:
-            self._stim_started       = True
-            self._last_trigger_count = count
-            self._last_trigger_time  = time.time()
-            self.console.log('[Visual] >> STIM STARTED', 'info')
-
-        total     = self._total_triggers
-        remaining = max(0, total - count)
-        secs_left = remaining / self._freq_hz if self._freq_hz > 0 else 0
-        pct       = min(100.0, count / total * 100) if total > 0 else 0
-
-        self._progressbar['value'] = pct
-
-        if count > 0:
-            self._lbl_status.configure(text='[ ACTIVE ]', fg=FO_ON)
-            self._lbl_countdown.configure(text=_fmt_countdown(secs_left), fg=FO_ON)
-            self._lbl_triggers.configure(text=f'{count:>6} / {total}', fg=FO_ON)
-        else:
-            total_secs = total / self._freq_hz if self._freq_hz > 0 else 0
-            self._lbl_status.configure(text='[ ARMED ]', fg=FO_MID)
-            self._lbl_countdown.configure(text=_fmt_countdown(total_secs), fg=FO_MID)
-            self._lbl_triggers.configure(
-                text=f'waiting  ·  {total} triggers', fg=FO_MID)
-
-        # ── Auto-stop logic (only once stim has started) ─────────────────────
-        if self._stim_started:
-            # Update last-trigger tracking
-            if count > self._last_trigger_count:
-                self._last_trigger_count = count
-                self._last_trigger_time  = time.time()
-
-            # Stim complete — all triggers played
-            if total > 0 and count >= total:
-                self._lbl_status.configure(text='[ COMPLETE ]', fg=FO_ON)
-                self._lbl_countdown.configure(text='00:00', fg=FO_ON)
-                self.console.log('[Visual] ■ STIM COMPLETE', 'info')
-                dmd.stop(getattr(self, '_proc', None))
-                return  # _run thread finally → _release_run
-
-            # Trigger timeout — no new edge for trigger_timeout_s
-            timeout = self.params.get('trigger_timeout_s', 10)
-            if (time.time() - self._last_trigger_time) > timeout:
-                self.console.log(
-                    f'[Visual] ■ No trigger for {timeout}s — stopping', 'warn')
-                dmd.stop(getattr(self, '_proc', None))
-                return  # _run thread finally → _release_run
-
-        self._poll_id = self.after(1000, self._poll_progress)
-
-    def _reset_progress(self):
-        self._polling      = False
-        self._stim_started = False
-        if self._poll_id:
-            self.after_cancel(self._poll_id)
-            self._poll_id = None
-        self._progressbar['value'] = 0
-        self._update_duration_preview()
-
 
 # ── DH tab ───────────────────────────────────────────────────────────────────
 
-class DhTab(ttk.Frame):
+class DhTab(_StimTimerMixin, ttk.Frame):
+
+    _tab_prefix = '[DH]'
+
     def __init__(self, parent, console: ConsoleLog, params: dict, config: dict,
                  save_config=None, acquire_run=None, release_run=None):
-        super().__init__(parent)
+        ttk.Frame.__init__(self, parent)
         self.console      = console
         self.params       = params
         self.config       = config
         self._save_config = save_config  or (lambda: None)
         self._acquire_run = acquire_run  or (lambda: True)
         self._release_run = release_run  or (lambda: None)
+        self._init_timer_state()
+        # DH-specific state
+        self._vec_col_slm     = []
+        self._vec_col_shutter = []
+        self._pm_lines        = []
+        self._pm_index        = 0
+        self._shutter_open    = False
+        self._shutter_output  = None
         self._build()
 
     def _init_vars(self):
         cfg = self.config
-        self.var_freq       = tk.StringVar(value=str(cfg.get('dh_freq', 20.0)))
-        self.var_n_spots    = tk.IntVar(   value=cfg.get('dh_n_spots', 1))
-        self.var_bin_mode   = tk.StringVar(value=cfg.get('dh_bin_mode', 'dark'))
-        self.var_slm_port   = tk.StringVar(value=cfg.get('dh_arduino_slm_port', ''))
+        self.var_freq     = tk.StringVar(value=str(cfg.get('dh_freq', 20.0)))
+        self.var_n_spots  = tk.IntVar(   value=cfg.get('dh_n_spots', 1))
+        self.var_bin_mode = tk.StringVar(value=cfg.get('dh_bin_mode', 'dark'))
+        self.var_slm_port = tk.StringVar(value=cfg.get('dh_arduino_slm_port', ''))
 
     def _build(self):
         self._init_vars()
         self.configure(style='TFrame')
-        self.columnconfigure(0, weight=1)
-
-        content = ttk.Frame(self, padding=12)
-        content.grid(row=0, column=0, sticky='nsew')
-        content.columnconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1, minsize=360)
+        self.columnconfigure(1, weight=1, minsize=300)
         self.rowconfigure(0, weight=1)
 
-        row = 0
+        left  = ttk.Frame(self, padding=8)
+        right = ttk.Frame(self, padding=8)
+        left.grid( row=0, column=0, sticky='nsew')
+        right.grid(row=0, column=1, sticky='nsew')
 
-        # Frequency
-        freq_card = ttk.LabelFrame(content, text='Frequency', padding=6)
-        freq_card.grid(row=row, column=0, sticky='ew', pady=(0, 8))
-        freq_card.columnconfigure(1, weight=1)
-        ttk.Label(freq_card, text='Rate (Hz):').grid(
-            row=0, column=0, sticky='w', padx=6)
-        ttk.Entry(freq_card, textvariable=self.var_freq, width=10).grid(
-            row=0, column=1, sticky='w', padx=6, pady=4)
-        row += 1
+        self._build_left(left)
+        self._build_right(right)
+        self.var_freq.trace_add('write', self._update_duration_preview)
+        self.var_n_spots.trace_add('write', self._update_duration_preview)
+        self._on_spots_changed()
+        self._on_bin_mode_changed()
+        self._scan_pm_folder()
+        self._update_duration_preview()
+
+    # -- left column ----------------------------------------------------------
+
+    def _build_left(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(3, weight=1)
 
         # Phasemask auto-detection
-        pm_card = ttk.LabelFrame(content, text='Phasemask detection', padding=6)
-        pm_card.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        pm_card = ttk.LabelFrame(parent, text='Phasemask detection', padding=6)
+        pm_card.grid(row=0, column=0, sticky='ew', pady=(0, 8))
         pm_card.columnconfigure(1, weight=1)
 
         pm_folder_row = ttk.Frame(pm_card, style='Card.TFrame')
@@ -925,7 +683,7 @@ class DhTab(ttk.Frame):
         pm_folder_row.columnconfigure(0, weight=1)
         self._lbl_pm_folder = ttk.Label(pm_folder_row,
             text=self.params.get('wavefront_folder', '—'),
-            foreground=COLOR_DIM, wraplength=380, justify='left')
+            foreground=COLOR_DIM, wraplength=280, justify='left')
         self._lbl_pm_folder.grid(row=0, column=0, sticky='w')
         ttk.Button(pm_folder_row, text='Open', width=5,
                    command=self._open_pm_folder).grid(row=0, column=1, padx=(4, 0))
@@ -936,11 +694,10 @@ class DhTab(ttk.Frame):
         self._lbl_pm_detected.pack(side='left')
         ttk.Button(det_row, text='Scan', width=5,
                    command=self._scan_pm_folder).pack(side='right')
-        row += 1
 
         # Spots + auto-resolve preview
-        spots_card = ttk.LabelFrame(content, text='Holography', padding=6)
-        spots_card.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        spots_card = ttk.LabelFrame(parent, text='Holography', padding=6)
+        spots_card.grid(row=1, column=0, sticky='ew', pady=(0, 8))
         spots_card.columnconfigure(1, weight=1)
 
         ttk.Label(spots_card, text='Number of spots:').grid(
@@ -956,19 +713,18 @@ class DhTab(ttk.Frame):
         ttk.Label(spots_card, text='VEC file:').grid(
             row=1, column=0, sticky='w', padx=6)
         self._lbl_vec = ttk.Label(spots_card, text='—', foreground=COLOR_DIM,
-                                  wraplength=400, justify='left')
+                                  wraplength=300, justify='left')
         self._lbl_vec.grid(row=1, column=1, sticky='w', padx=6, pady=2)
 
         ttk.Label(spots_card, text='Phase mask:').grid(
             row=2, column=0, sticky='w', padx=6)
         self._lbl_pm = ttk.Label(spots_card, text='—', foreground=COLOR_DIM,
-                                 wraplength=400, justify='left')
+                                 wraplength=300, justify='left')
         self._lbl_pm.grid(row=2, column=1, sticky='w', padx=6, pady=2)
-        row += 1
 
         # BIN selection
-        bin_card = ttk.LabelFrame(content, text='BIN file', padding=6)
-        bin_card.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        bin_card = ttk.LabelFrame(parent, text='BIN file', padding=6)
+        bin_card.grid(row=2, column=0, sticky='ew', pady=(0, 8))
 
         ttk.Radiobutton(bin_card, text='Bright',
                         variable=self.var_bin_mode, value='bright',
@@ -980,11 +736,91 @@ class DhTab(ttk.Frame):
             side='left', padx=(0, 12))
         self._lbl_bin = ttk.Label(bin_card, text='—', foreground=COLOR_DIM)
         self._lbl_bin.pack(side='left', padx=6)
-        row += 1
+
+        # Phasemask order list
+        order_card = ttk.LabelFrame(parent, text='Phasemask order', padding=6)
+        order_card.grid(row=3, column=0, sticky='nsew', pady=(0, 0))
+        order_card.columnconfigure(0, weight=1)
+        order_card.rowconfigure(0, weight=1)
+
+        lb_frame = ttk.Frame(order_card)
+        lb_frame.grid(row=0, column=0, sticky='nsew')
+        lb_frame.columnconfigure(0, weight=1)
+        lb_frame.rowconfigure(0, weight=1)
+
+        self._pm_listbox = tk.Listbox(
+            lb_frame,
+            height=10,
+            bg=COLOR_CARD, fg=COLOR_DIM,
+            selectmode='none',
+            activestyle='none',
+            font=('Consolas', 8),
+            relief='flat', bd=0,
+            highlightthickness=0,
+        )
+        self._pm_listbox.grid(row=0, column=0, sticky='nsew')
+        lb_scroll = ttk.Scrollbar(lb_frame, orient='vertical',
+                                  command=self._pm_listbox.yview)
+        lb_scroll.grid(row=0, column=1, sticky='ns')
+        self._pm_listbox.configure(yscrollcommand=lb_scroll.set)
+
+    # -- right column ---------------------------------------------------------
+
+    def _build_right(self, parent):
+        parent.columnconfigure(0, weight=1)
+
+        # Frequency
+        freq_card = ttk.LabelFrame(parent, text='Frequency', padding=6)
+        freq_card.grid(row=0, column=0, sticky='ew', pady=(0, 8))
+        freq_card.columnconfigure(1, weight=1)
+        ttk.Label(freq_card, text='Rate (Hz):').grid(
+            row=0, column=0, sticky='w', padx=6)
+        ttk.Entry(freq_card, textvariable=self.var_freq, width=10).grid(
+            row=0, column=1, sticky='w', padx=6, pady=4)
+
+        sci = self._build_sci_panel(parent)
+        sci.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+
+        # Signal indicators
+        ind_frame = tk.Frame(parent, bg=FO_BG, padx=10, pady=6)
+        ind_frame.grid(row=2, column=0, sticky='ew', pady=(0, 8))
+        ind_frame.columnconfigure(0, weight=1)
+        ind_frame.columnconfigure(1, weight=1)
+
+        # Phasemask indicator
+        pm_ind_frame = tk.Frame(ind_frame, bg=FO_BG)
+        pm_ind_frame.grid(row=0, column=0, padx=8)
+        self._ind_pm = tk.Canvas(pm_ind_frame, width=40, height=40,
+                                 bg=FO_BG, highlightthickness=0)
+        self._ind_pm.pack()
+        # outer ring
+        self._ind_pm.create_oval(4, 4, 36, 36, fill='', outline=FO_OFF, width=2,
+                                 tags='ring')
+        # inner dot
+        self._ind_pm.create_oval(14, 14, 26, 26, fill=FO_OFF, outline='',
+                                 tags='dot')
+        tk.Label(pm_ind_frame, text='PHASEMASK',
+                 font=('Consolas', 7, 'bold'), fg=FO_OFF, bg=FO_BG).pack()
+
+        # Shutter / laser indicator
+        sh_ind_frame = tk.Frame(ind_frame, bg=FO_BG)
+        sh_ind_frame.grid(row=0, column=1, padx=8)
+        self._ind_laser = tk.Canvas(sh_ind_frame, width=40, height=40,
+                                    bg=FO_BG, highlightthickness=0)
+        self._ind_laser.pack()
+        _lc = '#1A0000'
+        self._ind_laser.create_oval(15, 15, 25, 25, fill=_lc, outline=_lc,
+                                    tags=('laser', 'laser_oval'))
+        for coords in [(20,3,20,12),(20,28,20,37),(3,20,12,20),(28,20,37,20),
+                       (7,7,13,13),(27,7,33,13),(7,33,13,27),(27,33,33,27)]:
+            self._ind_laser.create_line(*coords, fill=_lc, width=2,
+                                        tags=('laser', 'laser_line'))
+        tk.Label(sh_ind_frame, text='SHUTTER',
+                 font=('Consolas', 7, 'bold'), fg=FO_OFF, bg=FO_BG).pack()
 
         # Hardware
-        hw_card = ttk.LabelFrame(content, text='Hardware', padding=6)
-        hw_card.grid(row=row, column=0, sticky='ew', pady=(0, 8))
+        hw_card = ttk.LabelFrame(parent, text='Hardware', padding=6)
+        hw_card.grid(row=3, column=0, sticky='ew', pady=(0, 8))
         hw_card.columnconfigure(0, weight=1)
 
         slm_row, self._combo_slm, self._btn_slm, self._dot_slm = make_port_row(
@@ -1008,21 +844,10 @@ class DhTab(ttk.Frame):
                   style='Card.TLabel').pack(side='left', padx=(6, 4))
         self._dot_tcp = make_status_dot(tcp_row)
         self._dot_tcp.pack(side='left')
-        row += 1
-
-        # Progress
-        self._progressbar = ttk.Progressbar(content, mode='determinate',
-                                            maximum=100, value=0)
-        self._progressbar.grid(row=row, column=0, sticky='ew', pady=(0, 4))
-        row += 1
-
-        self._lbl_progress = ttk.Label(content, text='—', foreground=COLOR_DIM)
-        self._lbl_progress.grid(row=row, column=0, sticky='w')
-        row += 1
 
         # RUN / STOP buttons
-        btn_frame = ttk.Frame(content)
-        btn_frame.grid(row=row, column=0, sticky='ew', pady=(4, 0))
+        btn_frame = ttk.Frame(parent)
+        btn_frame.grid(row=4, column=0, sticky='ew', pady=(4, 0))
         btn_frame.columnconfigure(0, weight=3)
         btn_frame.columnconfigure(1, weight=1)
 
@@ -1042,11 +867,34 @@ class DhTab(ttk.Frame):
         )
         self._btn_stop.grid(row=0, column=1, sticky='ew')
 
-        self._on_spots_changed()
-        self._on_bin_mode_changed()
-        self._scan_pm_folder()
-
     # -- callbacks ------------------------------------------------------------
+
+    def _vec_path(self) -> str:
+        try:
+            n = self.var_n_spots.get()
+        except tk.TclError:
+            return ''
+        stim_folder = self.params.get('dh_stim_folder', '')
+        vec_sub     = self.params.get('vec_subfolder', 'VEC')
+        vec_pattern = self.params.get('dh_vec_pattern', '')
+        if not stim_folder or not vec_pattern:
+            return ''
+        fname = vec_pattern.replace('{n_spots}', f'{n:03d}')
+        p = os.path.join(stim_folder, vec_sub, fname)
+        return p if os.path.isfile(p) else ''
+
+    def _pm_path(self) -> str:
+        try:
+            n = self.var_n_spots.get()
+        except tk.TclError:
+            return ''
+        stim_folder = self.params.get('dh_stim_folder', '')
+        pm_sub      = self.params.get('phasemasks_subfolder', 'Phasemasks')
+        pm_pattern  = self.params.get('dh_phasemask_pattern', '')
+        if not stim_folder or not pm_pattern:
+            return ''
+        fname = pm_pattern.replace('{n_spots}', f'{n:03d}')
+        return os.path.join(stim_folder, pm_sub, fname)
 
     def _open_pm_folder(self):
         open_folder(self.params.get('wavefront_folder', ''))
@@ -1065,15 +913,21 @@ class DhTab(ttk.Frame):
             self._on_spots_changed()
 
     def _on_spots_changed(self):
-        n            = self.var_n_spots.get()
-        n_str        = f'{n:03d}'
-        stim_folder  = self.params.get('dh_stim_folder', '')
-        vec_sub      = self.params.get('vec_subfolder', 'VEC')
-        vec_pattern  = self.params.get('dh_vec_pattern', '')
-        pm_sub       = self.params.get('phasemasks_subfolder', 'Phasemasks')
-        pm_pattern   = self.params.get('dh_phasemask_pattern', '')
-        self._lbl_vec.configure(text=os.path.join(stim_folder, vec_sub, vec_pattern.replace('{n_spots}', n_str)))
-        self._lbl_pm.configure( text=os.path.join(stim_folder, pm_sub, pm_pattern.replace('{n_spots}', n_str)))
+        try:
+            n = self.var_n_spots.get()
+        except tk.TclError:
+            return
+        n_str       = f'{n:03d}'
+        stim_folder = self.params.get('dh_stim_folder', '')
+        vec_sub     = self.params.get('vec_subfolder', 'VEC')
+        vec_pattern = self.params.get('dh_vec_pattern', '')
+        pm_sub      = self.params.get('phasemasks_subfolder', 'Phasemasks')
+        pm_pattern  = self.params.get('dh_phasemask_pattern', '')
+        self._lbl_vec.configure(
+            text=os.path.join(stim_folder, vec_sub, vec_pattern.replace('{n_spots}', n_str)))
+        self._lbl_pm.configure(
+            text=os.path.join(stim_folder, pm_sub, pm_pattern.replace('{n_spots}', n_str)))
+        self._load_pm_lines()
 
     def _on_bin_mode_changed(self):
         mode        = self.var_bin_mode.get()
@@ -1083,6 +937,95 @@ class DhTab(ttk.Frame):
 
     def _on_flash_slm(self):
         self.console.log('[DH] Flash & Connect Arduino SLM — not yet implemented', 'warn')
+
+    # -- phasemask order list -------------------------------------------------
+
+    def _load_pm_lines(self):
+        """Load phasemask order txt into the listbox. Line 0 = repos (rest)."""
+        if not hasattr(self, '_pm_listbox'):
+            return
+        pm_path = self._pm_path()
+        self._pm_listbox.delete(0, 'end')
+        self._pm_lines = []
+        if not os.path.isfile(pm_path):
+            return
+        with open(pm_path, 'r') as f:
+            lines = f.read().splitlines()
+        self._pm_lines = lines[1:]  # skip comment header
+        for line in self._pm_lines:
+            self._pm_listbox.insert('end', os.path.basename(line))
+        self._pm_index = 0
+        self._update_pm_list()
+
+    def _update_pm_list(self):
+        """Highlight _pm_index in the listbox and scroll to it."""
+        lb = self._pm_listbox
+        for i in range(lb.size()):
+            lb.itemconfig(i, bg=COLOR_CARD, fg=COLOR_DIM)
+        if 0 <= self._pm_index < lb.size():
+            lb.itemconfig(self._pm_index, bg=FO_MID, fg=FO_BG)
+            lb.see(self._pm_index)
+
+    # -- trigger advance hook -------------------------------------------------
+
+    def _on_trigger_advance(self, old_count: int, new_count: int):
+        slm = self._vec_col_slm
+        sht = self._vec_col_shutter
+
+        new_pm_count  = 0
+        last_shutter  = self._shutter_open
+
+        for i in range(old_count, min(new_count, len(slm))):
+            if slm[i] == 1:
+                new_pm_count += 1
+            if i < len(sht):
+                last_shutter = bool(sht[i])
+
+        if new_pm_count > 0:
+            self._pm_index = min(self._pm_index + new_pm_count,
+                                 len(self._pm_lines) - 1)
+            self._flash_pm_indicator()
+            self._update_pm_list()
+
+        if last_shutter != self._shutter_open:
+            self._shutter_open = last_shutter
+            self._update_shutter_indicator()
+            self._send_shutter(last_shutter)
+
+    def _flash_pm_indicator(self):
+        self._ind_pm.itemconfig('dot',  fill=FO_ON)
+        self._ind_pm.itemconfig('ring', outline=FO_ON)
+        self.after(200, lambda: (
+            self._ind_pm.itemconfig('dot',  fill=FO_OFF),
+            self._ind_pm.itemconfig('ring', outline=FO_OFF),
+        ))
+
+    def _update_shutter_indicator(self):
+        color = '#FF4400' if self._shutter_open else '#1A0000'
+        self._ind_laser.itemconfig('laser_oval', fill=color, outline=color)
+        self._ind_laser.itemconfig('laser_line', fill=color)
+
+    def _send_shutter(self, open_: bool):
+        if self._shutter_output:
+            try:
+                self._shutter_output.write(10.0 if open_ else 0.0)
+            except Exception as e:
+                self.console.log(f'[DH] Shutter write error: {e}', 'warn')
+
+    # -- stim reset hook ------------------------------------------------------
+
+    def _on_stim_reset(self):
+        self._pm_index    = 0
+        self._shutter_open = False
+        if hasattr(self, '_pm_listbox'):
+            self._update_pm_list()
+        if hasattr(self, '_ind_laser'):
+            self._update_shutter_indicator()
+        if self._shutter_output:
+            self._shutter_output.close()
+            self._shutter_output = None
+
+    # -- run / stop -----------------------------------------------------------
 
     def _on_run(self):
         try:
@@ -1101,6 +1044,31 @@ class DhTab(ttk.Frame):
         self._save_config()
         self._btn_run.configure(text='RUNNING…', bg='#3A3A3A')
         self._btn_stop.configure(state='normal', bg='#4A1A1A', fg='#FF4444')
+        self._arm_and_start(freq_hz)
+
+        # Load vec columns for column tracking
+        vec_p = self._vec_path()
+        if vec_p:
+            self._vec_col_slm, self._vec_col_shutter = sync.read_vec_columns(vec_p)
+            n_pm  = sum(self._vec_col_slm)
+            n_sht = sum(self._vec_col_shutter)
+            self.console.log(
+                f'[DH] Vec loaded: {len(self._vec_col_slm)} triggers, '
+                f'{n_pm} phasemask events, {n_sht} shutter-open events')
+
+        # Load phasemask order list (repos = index 0)
+        self._load_pm_lines()
+
+        # Arm shutter output
+        nidaq  = self.params.get('nidaq', {})
+        device = nidaq.get('device', 'Dev1')
+        ao_ch  = nidaq.get('ao_shutter', 0)
+        try:
+            self._shutter_output = sync.ShutterOutput(device, ao_ch)
+            self.console.log(f'[DH] Shutter output armed ({device}/ao{ao_ch})')
+        except Exception as e:
+            self._shutter_output = None
+            self.console.log(f'[DH] Shutter output unavailable: {e}', 'warn')
 
         def _run():
             try:
@@ -1116,6 +1084,7 @@ class DhTab(ttk.Frame):
             except Exception as e:
                 self.after(0, lambda: self.console.log(f'[DH] ERROR: {e}', 'error'))
             finally:
+                self._close_counter()
                 self.after(0, self._release_run)
 
         threading.Thread(target=_run, daemon=True).start()
@@ -1123,6 +1092,309 @@ class DhTab(ttk.Frame):
     def _on_stop(self):
         dmd.stop(getattr(self, '_proc', None))
         self.console.log('[DH] Protocol interrupted.', 'warn')
+
+
+# ── VDH tab ──────────────────────────────────────────────────────────────────
+
+class VdhTab(_StimTimerMixin, ttk.Frame):
+
+    _tab_prefix = '[VDH]'
+
+    def __init__(self, parent, console: ConsoleLog, params: dict, config: dict,
+                 save_config=None, acquire_run=None, release_run=None):
+        ttk.Frame.__init__(self, parent)
+        self.console       = console
+        self.params        = params
+        self.config        = config
+        self._save_config  = save_config  or (lambda: None)
+        self._acquire_run  = acquire_run  or (lambda: True)
+        self._release_run  = release_run  or (lambda: None)
+        self._init_timer_state()
+        self._build()
+
+    def _init_vars(self):
+        cfg = self.config
+        self.var_binvec_folder = tk.StringVar(
+            value=cfg.get('vdh_binvec_folder',
+                          self.params.get('vdh_default_binvec_folder', '')))
+        self.var_bin_name      = tk.StringVar(value=cfg.get('vdh_bin_name', ''))
+        self.var_vec_name      = tk.StringVar(value=cfg.get('vdh_vec_name', ''))
+        self.var_pm_name       = tk.StringVar(value=cfg.get('vdh_pm_name', ''))
+        self.var_freq          = tk.StringVar(value=str(cfg.get('vdh_freq', 20.0)))
+        self.var_slm_port      = tk.StringVar(value=cfg.get('vdh_arduino_slm_port', ''))
+        self.var_autopattern   = tk.StringVar(
+            value=cfg.get('vdh_autopattern',
+                          self.params.get('vdh_autopattern', '_{n_spots}spots_')))
+
+    def _build(self):
+        self._init_vars()
+        self.configure(style='TFrame')
+        self.columnconfigure(0, weight=1, minsize=360)
+        self.columnconfigure(1, weight=1, minsize=340)
+        self.rowconfigure(0, weight=1)
+
+        left  = ttk.Frame(self, padding=8)
+        right = ttk.Frame(self, padding=8)
+        left.grid( row=0, column=0, sticky='nsew')
+        right.grid(row=0, column=1, sticky='nsew')
+
+        self._build_left(left)
+        self._build_right(right)
+        self.var_vec_name.trace_add('write', self._update_duration_preview)
+        self.var_freq.trace_add('write', self._update_duration_preview)
+        self._update_duration_preview()
+
+    # -- left column ----------------------------------------------------------
+
+    def _build_left(self, parent):
+        parent.columnconfigure(0, weight=1)
+
+        files_card = ttk.LabelFrame(parent, text='Files', padding=6)
+        files_card.grid(row=0, column=0, sticky='ew', pady=(0, 8))
+        files_card.columnconfigure(0, weight=1)
+
+        folder_row = make_folder_picker_row(
+            files_card, 'Binvec folder',
+            self.var_binvec_folder,
+            on_select=self._on_folder_selected,
+            initialdir=self.params.get('binvecs_root', '/'))
+        folder_row.grid(row=0, column=0, sticky='ew', pady=2)
+
+        bin_row = ttk.Frame(files_card, style='Card.TFrame')
+        bin_row.grid(row=1, column=0, sticky='ew', pady=2)
+        bin_row.columnconfigure(1, weight=1)
+        ttk.Label(bin_row, text='.bin file', width=22, anchor='w',
+                  style='Card.TLabel').grid(row=0, column=0, padx=(6, 2))
+        self._combo_bin = ttk.Combobox(bin_row, textvariable=self.var_bin_name,
+                                       state='readonly')
+        self._combo_bin.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
+
+        vec_row = ttk.Frame(files_card, style='Card.TFrame')
+        vec_row.grid(row=2, column=0, sticky='ew', pady=2)
+        vec_row.columnconfigure(1, weight=1)
+        ttk.Label(vec_row, text='.vec file', width=22, anchor='w',
+                  style='Card.TLabel').grid(row=0, column=0, padx=(6, 2))
+        self._combo_vec = ttk.Combobox(vec_row, textvariable=self.var_vec_name,
+                                       state='readonly')
+        self._combo_vec.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
+
+        pm_row = ttk.Frame(files_card, style='Card.TFrame')
+        pm_row.grid(row=3, column=0, sticky='ew', pady=2)
+        pm_row.columnconfigure(1, weight=1)
+        ttk.Label(pm_row, text='Phase mask', width=22, anchor='w',
+                  style='Card.TLabel').grid(row=0, column=0, padx=(6, 2))
+        self._combo_pm = ttk.Combobox(pm_row, textvariable=self.var_pm_name,
+                                      state='readonly')
+        self._combo_pm.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
+
+        if self.var_binvec_folder.get():
+            self._on_folder_selected(self.var_binvec_folder.get())
+
+        # Phasemask detection
+        pm_card = ttk.LabelFrame(parent, text='Phasemask detection', padding=6)
+        pm_card.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+        pm_card.columnconfigure(1, weight=1)
+
+        ttk.Label(pm_card, text='Folder:').grid(row=0, column=0, sticky='nw', padx=6, pady=2)
+        pm_folder_row = ttk.Frame(pm_card, style='Card.TFrame')
+        pm_folder_row.grid(row=0, column=1, sticky='ew', padx=(2, 6), pady=2)
+        pm_folder_row.columnconfigure(0, weight=1)
+        self._lbl_pm_folder = ttk.Label(pm_folder_row,
+            text=self.params.get('wavefront_folder', '—'),
+            foreground=COLOR_DIM, wraplength=280, justify='left')
+        self._lbl_pm_folder.grid(row=0, column=0, sticky='w')
+        ttk.Button(pm_folder_row, text='Open', width=5,
+                   command=self._open_pm_folder).grid(row=0, column=1, padx=(4, 0))
+
+        det_row = ttk.Frame(pm_card, style='Card.TFrame')
+        det_row.grid(row=1, column=0, columnspan=2, sticky='ew', padx=6, pady=(0, 4))
+        self._lbl_pm_detected = ttk.Label(det_row, text='—', foreground=COLOR_DIM)
+        self._lbl_pm_detected.pack(side='left')
+        ttk.Button(det_row, text='Scan', width=5,
+                   command=self._scan_pm_folder).pack(side='right')
+
+        fmt_row = ttk.Frame(pm_card, style='Card.TFrame')
+        fmt_row.grid(row=2, column=0, columnspan=2, sticky='ew', padx=6, pady=2)
+        fmt_row.columnconfigure(1, weight=1)
+        ttk.Label(fmt_row, text='Format:', style='Card.TLabel').grid(
+            row=0, column=0, sticky='w', padx=(0, 6))
+        ttk.Entry(fmt_row, textvariable=self.var_autopattern).grid(
+            row=0, column=1, sticky='ew')
+        ttk.Button(fmt_row, text='Auto-select', width=10,
+                   command=self._auto_select).grid(row=0, column=2, padx=(4, 0))
+
+        self._scan_pm_folder()
+
+    # -- right column ---------------------------------------------------------
+
+    def _build_right(self, parent):
+        parent.columnconfigure(0, weight=1)
+
+        freq_card = ttk.LabelFrame(parent, text='Frequency', padding=6)
+        freq_card.grid(row=0, column=0, sticky='ew', pady=(0, 8))
+        freq_card.columnconfigure(1, weight=1)
+        ttk.Label(freq_card, text='Rate (Hz):').grid(
+            row=0, column=0, sticky='w', padx=6)
+        ttk.Entry(freq_card, textvariable=self.var_freq, width=10).grid(
+            row=0, column=1, sticky='w', padx=6, pady=4)
+
+        sci = self._build_sci_panel(parent)
+        sci.grid(row=1, column=0, sticky='ew', pady=(0, 8))
+
+        # Hardware
+        hw_card = ttk.LabelFrame(parent, text='Hardware', padding=6)
+        hw_card.grid(row=2, column=0, sticky='ew', pady=(0, 8))
+        hw_card.columnconfigure(0, weight=1)
+
+        slm_row, self._combo_slm, self._btn_slm, self._dot_slm = make_port_row(
+            hw_card, 'Arduino SLM',
+            self.var_slm_port,
+            'FLASH & CONNECT',
+            self._on_flash_slm,
+        )
+        slm_row.grid(row=0, column=0, sticky='ew', pady=2)
+
+        nidaq_row = ttk.Frame(hw_card, style='Card.TFrame')
+        nidaq_row.grid(row=1, column=0, sticky='ew', pady=2)
+        ttk.Label(nidaq_row, text='NI-DAQ', width=14, anchor='w',
+                  style='Card.TLabel').pack(side='left', padx=(6, 4))
+        self._dot_nidaq = make_status_dot(nidaq_row)
+        self._dot_nidaq.pack(side='left')
+        ttk.Label(nidaq_row, text='not armed', style='Card.TLabel',
+                  foreground=COLOR_DIM).pack(side='left', padx=6)
+
+        tcp_row = ttk.Frame(hw_card, style='Card.TFrame')
+        tcp_row.grid(row=2, column=0, sticky='ew', pady=2)
+        ttk.Label(tcp_row, text='TCP WaveFront', width=14, anchor='w',
+                  style='Card.TLabel').pack(side='left', padx=(6, 4))
+        self._dot_tcp = make_status_dot(tcp_row)
+        self._dot_tcp.pack(side='left')
+        ttk.Label(tcp_row, text='not connected', style='Card.TLabel',
+                  foreground=COLOR_DIM).pack(side='left', padx=6)
+
+        # RUN / STOP buttons
+        btn_frame = ttk.Frame(parent)
+        btn_frame.grid(row=3, column=0, sticky='ew', pady=(4, 0))
+        btn_frame.columnconfigure(0, weight=3)
+        btn_frame.columnconfigure(1, weight=1)
+
+        self._btn_run = tk.Button(
+            btn_frame, text='RUN PROTOCOL', command=self._on_run,
+            bg='#1A4A1A', fg='#00FF00',
+            activebackground='#2A6A2A', activeforeground='#00FF00',
+            font=('Consolas', 12, 'bold'), relief='flat', bd=0, pady=8,
+        )
+        self._btn_run.grid(row=0, column=0, sticky='ew', padx=(0, 4))
+
+        self._btn_stop = tk.Button(
+            btn_frame, text='STOP', command=self._on_stop,
+            bg='#2A2A2A', fg='#666666', state='disabled',
+            activebackground='#6A2A2A', activeforeground='#FF4444',
+            font=('Consolas', 12, 'bold'), relief='flat', bd=0, pady=8,
+        )
+        self._btn_stop.grid(row=0, column=1, sticky='ew')
+
+    # -- callbacks ------------------------------------------------------------
+
+    def _vec_path(self) -> str:
+        folder   = self.var_binvec_folder.get()
+        vec_name = self.var_vec_name.get()
+        if not folder or not vec_name:
+            return ''
+        sub = self.params.get('vec_subfolder', 'VEC')
+        p = os.path.join(folder, sub, vec_name)
+        return p if os.path.isfile(p) else ''
+
+    def _open_pm_folder(self):
+        open_folder(self.params.get('wavefront_folder', ''))
+
+    def _scan_pm_folder(self):
+        folder  = self.params.get('wavefront_folder', '')
+        pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
+        n = sync.count_spots_from_folder(folder, pattern)
+        if n == 0:
+            self._lbl_pm_detected.configure(text='0 spots found', foreground='#FF4444')
+            return
+        self._lbl_pm_detected.configure(
+            text=f'{n} spot{"s" if n > 1 else ""} detected', foreground='#00FF00')
+        self._auto_select(n)
+
+    def _auto_select(self, n: int = None):
+        if n is None:
+            folder  = self.params.get('wavefront_folder', '')
+            pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
+            n = sync.count_spots_from_folder(folder, pattern)
+        if not n:
+            return
+        substr = self.var_autopattern.get().replace('{n_spots}', str(n))
+        for fname in (self._combo_vec['values'] or []):
+            if substr in fname:
+                self.var_vec_name.set(fname)
+                break
+        for fname in (self._combo_pm['values'] or []):
+            if substr in fname:
+                self.var_pm_name.set(fname)
+                break
+
+    def _on_folder_selected(self, folder: str):
+        bin_files, vec_files, pm_files = scan_binvec_folder(folder, self.params)
+        self._combo_bin['values'] = bin_files
+        self._combo_vec['values'] = vec_files
+        self._combo_pm['values']  = pm_files
+        if self.var_bin_name.get() not in bin_files:
+            self.var_bin_name.set(bin_files[0] if bin_files else '')
+        if self.var_vec_name.get() not in vec_files:
+            self.var_vec_name.set(vec_files[0] if vec_files else '')
+        if self.var_pm_name.get() not in pm_files:
+            self.var_pm_name.set(pm_files[0] if pm_files else '')
+
+    def _on_flash_slm(self):
+        self.console.log('[VDH] Flash & Connect Arduino SLM — not yet implemented', 'warn')
+
+    def _on_run(self):
+        folder   = self.var_binvec_folder.get()
+        bin_name = self.var_bin_name.get()
+        vec_name = self.var_vec_name.get()
+
+        if not folder or not bin_name or not vec_name:
+            messagebox.showerror('Missing files', 'Select a binvec folder, a BIN and a VEC file.')
+            return
+        try:
+            freq_hz = float(self.var_freq.get())
+        except ValueError:
+            messagebox.showerror('Invalid frequency', f'"{self.var_freq.get()}" is not a valid number.')
+            return
+        if not self._acquire_run():
+            self.console.log('[VDH] Film.exe already running.', 'warn')
+            return
+
+        self._save_config()
+        self._btn_run.configure(text='RUNNING…', bg='#3A3A3A')
+        self._btn_stop.configure(state='normal', bg='#4A1A1A', fg='#FF4444')
+        self._arm_and_start(freq_hz)
+
+        def _run():
+            try:
+                self._proc = dmd.run_vdh(
+                    folder, bin_name, vec_name, freq_hz,
+                    self.params,
+                    lambda msg, lvl='info': self.after(0, lambda m=msg, l=lvl: self.console.log(m, l)),
+                )
+                self._proc.wait()
+                if self._proc.returncode not in (0, -1, 1):
+                    self.after(0, lambda: self.console.log(
+                        f'[DMD] film.exe unexpectedly terminated (code {self._proc.returncode})', 'warn'))
+            except Exception as e:
+                self.after(0, lambda: self.console.log(f'[VDH] ERROR: {e}', 'error'))
+            finally:
+                self._close_counter()
+                self.after(0, self._release_run)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_stop(self):
+        dmd.stop(getattr(self, '_proc', None))
+        self.console.log('[VDH] Protocol interrupted.', 'warn')
 
 
 # ── main application window ──────────────────────────────────────────────────
@@ -1187,8 +1459,8 @@ class PlerionApp(tk.Tk):
 
     def _release_run(self):
         self._running = False
-        self.vis_tab._reset_progress()
         for tab in (self.vis_tab, self.dh_tab, self.vdh_tab):
+            tab._reset_progress()
             tab._btn_run.configure(state='normal', text='RUN PROTOCOL', bg='#1A4A1A')
             tab._btn_stop.configure(state='disabled', bg='#2A2A2A', fg='#666666')
 

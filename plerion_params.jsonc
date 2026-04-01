@@ -10,7 +10,7 @@
   // ── WaveFront IV TCP ────────────────────────────────────────────────────────
   "tcp_slm": {
     "host": "172.17.19.37", // WaveFront IV IP
-    "port": 55160           // WaveFront IV port
+    "port": 55183           // WaveFront IV port
   },
 
   // ── Arduino ─────────────────────────────────────────────────────────────────
@@ -18,14 +18,14 @@
   "arduino_led_baud": 115200,  // Arduino LED baud (Luciole sketch)
 
   // ── Paths ───────────────────────────────────────────────────────────────────
-  "binvecs_root":        "E:/VisualStim_DMD/data/binvecs",       // Root for all binvec folders — used by film.exe
+  "binvecs_root":        "E:\\VisualStim_DMD\\data\\binvecs",       // Root for all binvec folders — used by film.exe
   "bin_subfolder":       "BIN",                                   // BIN subfolder name inside any stim folder
   "vec_subfolder":       "VEC",                                   // VEC subfolder name inside any stim folder
   "phasemasks_subfolder":"Phasemasks",                            // Phasemask order subfolder inside any stim folder
-  "film_exe":            "E:/VisualStim_DMD/x64/Release/film.exe", // Path to film.exe (ALP API)
+  "film_exe":            "E:\\VisualStim_DMD\\x64\\Release\\film.exe", // Path to film.exe (ALP API)
 
   // ── DH ──────────────────────────────────────────────────────────────────────
-  "dh_stim_folder":       "E:/VisualStim_DMD/data/binvecs/00_DigitalHolography", // Default stim folder for DH tab
+  "dh_stim_folder":       "E:\\VisualStim_DMD\\data\\binvecs\\00_DigitalHolography", // Default stim folder for DH tab
   "dh_vec_pattern":       "DigitalHolography_20Hz_{n_spots}HoloSpots_20rep.vec", // VEC filename template — {n_spots} zero-padded to 3 digits
   "dh_phasemask_pattern": "DigitalHolography_{n_spots}spots_20rep_PhaseMasksOrder.txt", // Phasemask order filename template
 
@@ -33,7 +33,7 @@
   "trigger_timeout_s": 10, // Seconds without trigger after stim start before auto-stop
 
   // ── WaveFront generated phasemasks (spot detection) ─────────────────────────
-  "wavefront_folder":  "E:/wfdIV_20241023/GeneratedPhasemasks", // Folder where WaveFront IV writes generated PNGs
+  "wavefront_folder":  "E:\\wfdIV_20241023\\GeneratedPhasemasks", // Folder where WaveFront IV writes generated PNGs
   "wavefront_pattern": "Pattern{n}_000.algoPhp.png",            // Filename template for spot detection — {n} is the spot index
 
   // ── VDH ─────────────────────────────────────────────────────────────────────

@@ -1,17 +1,15 @@
 {
   "vis_binvec_folder": "E:/VisualStim_DMD/data/binvecs/01_CommonStim",
-  "vis_bin_name": "DG_50hZ_8reps_8dir_2sT_369pixL-768x768_MEA2p.bin",
-  "vis_vec_name": "DG_20220411_50Hz_8reps_8dir_2sT.vec",
-  "vis_freq": 60.0,
+  "vis_bin_name": "Chirp_50Hz_1024x768pix.bin",
+  "vis_vec_name": "Chirp_50Hz_20reps_1024x768pix.vec",
+  "vis_freq": 50.0,
   "dh_freq": 20.0,
   "dh_n_spots": 12,
   "dh_bin_mode": "dark",
-  "dh_arduino_slm_port": "COM4",
   "vdh_binvec_folder": "E:/VisualStim_DMD/data/binvecs/05_Victor",
   "vdh_bin_name": "Surround_disc_1200um_500off_40x_Down.bin",
   "vdh_vec_name": "Surround_white_disc_delay_DH_12.vec",
   "vdh_pm_name": "StimList_12spots.txt",
   "vdh_freq": 20.0,
-  "vdh_arduino_slm_port": "COM4",
   "vdh_autopattern": "DH_{n_spots}"
 }

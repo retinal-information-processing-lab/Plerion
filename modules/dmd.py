@@ -2,6 +2,7 @@
 # Resolves the folder/bin/vec indices inside the binvecs tree, then launches
 # film.exe with those indices piped to stdin.  No symlinks needed.
 
+import ctypes
 import os
 import subprocess
 import threading
@@ -50,7 +51,7 @@ def launch_film(freq_hz: float, user_idx: int, bin_idx: int, vec_idx: int,
         stderr=subprocess.STDOUT,
         text=True,
         cwd=os.path.dirname(exe),
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
     )
 
     # Read stdout in background — only surface error lines to the GUI log
@@ -106,11 +107,49 @@ def run_dh(n_spots: int, bin_mode: str, freq_hz: float,
     return proc
 
 
-def stop(proc: subprocess.Popen) -> None:
-    """Terminate film.exe after protocol completion (trigger cessation confirmed)."""
+def _alp_halt(film_exe: str) -> bool:
+    """Load alpD41.dll from the same directory as film.exe, allocate the ALP
+    device, halt it and free it.  Returns True on success.
+
+    This is needed because TerminateProcess kills film.exe before it can call
+    AlpDevHalt/AlpDevFree itself, leaving the DMD in its last ON state.
+    """
+    try:
+        dll_path = os.path.join(os.path.dirname(film_exe), 'alpD41.dll')
+        alp = ctypes.WinDLL(dll_path)
+
+        alp.AlpDevAlloc.restype  = ctypes.c_long
+        alp.AlpDevAlloc.argtypes = [ctypes.c_long, ctypes.c_long,
+                                     ctypes.POINTER(ctypes.c_ulong)]
+        alp.AlpDevHalt.restype   = ctypes.c_long
+        alp.AlpDevHalt.argtypes  = [ctypes.c_ulong]
+        alp.AlpDevFree.restype   = ctypes.c_long
+        alp.AlpDevFree.argtypes  = [ctypes.c_ulong]
+
+        dev_id = ctypes.c_ulong(0)
+        if alp.AlpDevAlloc(0, 0, ctypes.byref(dev_id)) != 0:   # != ALP_OK
+            return False
+        alp.AlpDevHalt(dev_id)
+        alp.AlpDevFree(dev_id)
+        return True
+    except Exception:
+        return False
+
+
+def stop(proc: subprocess.Popen, film_exe: str = '') -> None:
+    """Terminate film.exe and ensure the DMD is switched off.
+
+    film.exe only calls AlpDevHalt/AlpDevFree after an interactive _getch(),
+    which never fires when launched without a console.  So after killing the
+    process we re-open the ALP device ourselves and halt it.
+    """
     if proc and proc.poll() is None:
         proc.terminate()
         try:
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+    # Re-open ALP device and halt it so the DMD turns off.
+    if film_exe:
+        _alp_halt(film_exe)
