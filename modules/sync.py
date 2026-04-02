@@ -126,6 +126,11 @@ class WaveformOutput:
     def close(self):
         try:
             self._task.stop()
+            # Zero both channels so the shutter closes and SLM signal drops
+            self._task.write([0.0, 0.0], auto_start=True)
+        except Exception:
+            pass
+        try:
             self._task.close()
         except Exception:
             pass

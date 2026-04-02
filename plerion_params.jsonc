@@ -7,11 +7,8 @@
     "pfi_clock":  0         // PFI terminal receiving the DMD trigger TTL
   },
 
-  // ── WaveFront IV TCP ────────────────────────────────────────────────────────
-  "tcp_slm": {
-    "host": "172.17.19.37", // WaveFront IV IP
-    "port": 55183           // WaveFront IV port
-  },
+  // ── WaveFront IV ────────────────────────────────────────────────────────────
+  "wfd_script_dir": "E:\\wfdIV_20241023\\script",  // WaveFront IV JS watch folder
 
   // ── Arduino ─────────────────────────────────────────────────────────────────
   "arduino_slm_baud": 128000,  // Arduino SLM baud (sendPeriodOnTrig sketch)

@@ -20,14 +20,14 @@ import threading
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
+    QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QComboBox, QSpinBox, QPushButton,
     QRadioButton, QButtonGroup, QProgressBar, QGroupBox,
-    QPlainTextEdit, QListWidget, QListWidgetItem, QFileDialog,
-    QMessageBox, QSplitter, QScrollBar, QSizePolicy,
+    QPlainTextEdit, QListWidget, QFileDialog,
+    QMessageBox, QSizePolicy,
 )
 from PySide6.QtCore import (
-    Qt, QObject, QThread, Signal, Slot, QTimer, QSize,
+    Qt, QObject, QThread, Signal, Slot, QTimer,
 )
 from PySide6.QtGui import (
     QColor, QPalette, QFont, QTextCharFormat, QPainter, QPen, QBrush,
@@ -196,7 +196,7 @@ def apply_dark_theme(app: QApplication):
 class TriggerWorker(QObject):
     """Polls NI-DAQ TriggerCounter at 100Hz in a QThread, emits signals."""
 
-    trigger_update = Signal(int)    # current cumulative count
+    trigger_update = Signal(int)
     stim_started   = Signal()
     stim_complete  = Signal()
     stim_timeout   = Signal()
@@ -204,13 +204,13 @@ class TriggerWorker(QObject):
 
     def __init__(self, counter, total_triggers: int, timeout_s: float):
         super().__init__()
-        self._counter        = counter
-        self._total          = total_triggers
-        self._timeout        = timeout_s
-        self._active         = True
-        self._started        = False
-        self._last_count     = 0
-        self._last_time      = 0.0
+        self._counter    = counter
+        self._total      = total_triggers
+        self._timeout    = timeout_s
+        self._active     = True
+        self._started    = False
+        self._last_count = 0
+        self._last_time  = 0.0
 
     @Slot()
     def run(self):
@@ -260,7 +260,6 @@ class ConsoleLog(QPlainTextEdit):
         'freq':  QColor('#00CCFF'),
     }
 
-    # Thread-safe: emit signal from any thread, slot appends in main thread
     _append_signal = Signal(str, str)
 
     def __init__(self, parent=None):
@@ -358,7 +357,6 @@ class SciTimerPanel(QWidget):
 
     def _set(self, color: str, status: str, countdown: str,
              triggers: str, pct: int):
-        # Only update stylesheets when the color actually changes
         if color != self._cur_color:
             self._cur_color = color
             ss = f'color: {color}; background: transparent;'
@@ -409,31 +407,26 @@ class IndicatorDot(QWidget):
 
     def _draw_phasemask(self, p: QPainter):
         color = QColor(FO_ON) if self._active else QColor(FO_OFF)
-        # outer ring
         p.setPen(QPen(color, 2))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(4, 4, 32, 32)
-        # inner dot
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(color))
         p.drawEllipse(14, 14, 12, 12)
 
     def _draw_shutter(self, p: QPainter):
         color = QColor('#FF4400') if self._active else QColor('#1A0000')
-        # center dot
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(color))
         p.drawEllipse(15, 15, 10, 10)
-        # rays
-        pen = QPen(color, 2)
-        p.setPen(pen)
+        p.setPen(QPen(color, 2))
         rays = [(20,3,20,12),(20,28,20,37),(3,20,12,20),(28,20,37,20),
                 (7,7,13,13),(27,7,33,13),(7,33,13,27),(27,33,33,27)]
         for x1, y1, x2, y2 in rays:
             p.drawLine(x1, y1, x2, y2)
 
 
-# ── status dot helper ────────────────────────────────────────────────────────
+# ── StatusDot ────────────────────────────────────────────────────────────────
 
 class StatusDot(QWidget):
     """Small coloured circle for hardware connection status."""
@@ -457,11 +450,7 @@ class StatusDot(QWidget):
 
 
 class ElidedLabel(QLabel):
-    """Single-line label that elides long text on the left (…/folder/file.txt).
-
-    Use this for file/folder path display so the filename end stays visible.
-    Call setText() normally; elision is applied automatically on resize.
-    """
+    """Single-line label that elides long text on the left (…/folder/file.txt)."""
 
     def __init__(self, text: str = '—', parent=None):
         super().__init__(parent)
@@ -483,7 +472,7 @@ class ElidedLabel(QLabel):
         return fm.elidedText(self._full_text, Qt.ElideLeft, max(self.width(), 10))
 
 
-# ── shared run/stop button factory ───────────────────────────────────────────
+# ── widget factories ─────────────────────────────────────────────────────────
 
 def _make_run_btn(parent) -> QPushButton:
     btn = QPushButton('RUN PROTOCOL', parent)
@@ -511,8 +500,6 @@ def _make_stop_btn(parent) -> QPushButton:
     return btn
 
 
-# ── folder picker row helper ─────────────────────────────────────────────────
-
 def _make_folder_row(parent, label_text: str, initial: str,
                      on_select=None, initialdir: str = '') -> tuple:
     """Returns (row_widget, line_edit)."""
@@ -539,7 +526,6 @@ def _make_folder_row(parent, label_text: str, initial: str,
 
     btn.clicked.connect(browse)
     return row, le
-
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -632,7 +618,7 @@ class VisualTab(QWidget):
         btn_row = QWidget()
         br = QHBoxLayout(btn_row)
         br.setContentsMargins(0, 0, 0, 0)
-        self._btn_run = _make_run_btn(self)
+        self._btn_run  = _make_run_btn(self)
         self._btn_stop = _make_stop_btn(self)
         br.addWidget(self._btn_run, 3)
         br.addWidget(self._btn_stop, 1)
@@ -642,13 +628,11 @@ class VisualTab(QWidget):
         main.addWidget(left, 1)
         main.addWidget(right, 1)
 
-        # signals
         self._btn_run.clicked.connect(self._on_run)
         self._btn_stop.clicked.connect(self._on_stop)
         self._le_freq.textChanged.connect(self._update_preview)
         self._combo_vec.currentTextChanged.connect(self._update_preview)
 
-        # populate from config
         if cfg.get('vis_binvec_folder'):
             self._on_folder_selected(cfg['vis_binvec_folder'])
         if cfg.get('vis_bin_name'):
@@ -717,7 +701,6 @@ class VisualTab(QWidget):
         self._btn_run.setText('RUNNING…')
         self._btn_stop.setEnabled(True)
 
-        # arm counter + worker
         self._arm_worker(freq_hz)
 
         def _run():
@@ -799,7 +782,6 @@ class VisualTab(QWidget):
 
     @Slot()
     def _do_cleanup(self):
-        """Runs in main thread via signal — safe to touch Qt widgets."""
         if self._worker:
             self._worker.stop()
             self._worker = None
@@ -820,12 +802,21 @@ class VisualTab(QWidget):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# ── DH tab ───────────────────────────────────────────────────────────────────
+# ── _HoloTabBase — shared logic for DH and VDH tabs ──────────────────────────
 # ═════════════════════════════════════════════════════════════════════════════
 
-class DhTab(QWidget):
+class _HoloTabBase(QWidget):
+    """Shared state and protocol logic for DhTab and VdhTab.
 
-    _tab_prefix = '[DH]'
+    Subclasses must implement:
+      _build()      — full widget layout; must create self._pm_listbox and
+                      self._le_freq, then call self._build_right_panel()
+      _vec_path()   — return absolute VEC path or ''
+      _pm_path()    — return absolute phasemask order file path or ''
+      _on_run()     — validate inputs, call _start_protocol(), start DMD thread
+    """
+
+    _tab_prefix      = ''
     _request_cleanup = Signal()
 
     def __init__(self, console: ConsoleLog, params: dict, config: dict,
@@ -845,245 +836,123 @@ class DhTab(QWidget):
         self._total_triggers  = 0
         self._freq_hz         = 0.0
         self._last_processed  = 0
-        # DH tracking state
         self._vec_col_slm     = []
         self._vec_col_shutter = []
         self._pm_lines        = []
         self._pm_index        = 0
         self._shutter_open    = False
-        tcp = params.get('tcp_slm', {})
-        self._slm = slm.SLMClient(tcp.get('host', ''), tcp.get('port', 55160))
+        self._slm = slm.SLMClient(params.get('wfd_script_dir', ''))
         self._request_cleanup.connect(self._do_cleanup)
         self._build()
 
-    def _build(self):
-        cfg = self.config
-        main = QHBoxLayout(self)
-        main.setContentsMargins(8, 8, 8, 8)
-        main.setSpacing(12)
+    # ── abstract interface ────────────────────────────────────────────────────
 
-        # ── left column ──
-        left = QWidget()
-        left.setMinimumWidth(360)
-        lv = QVBoxLayout(left)
-        lv.setContentsMargins(0, 0, 0, 0)
+    def _build(self):           raise NotImplementedError
+    def _vec_path(self) -> str: raise NotImplementedError
+    def _pm_path(self) -> str:  raise NotImplementedError
+    def _on_run(self):          raise NotImplementedError
 
-        # DMD group: n_spots, VEC, phasemask order file, BIN mode, Rate
-        bin_grp = QGroupBox('DMD')
-        bgl_outer = QVBoxLayout(bin_grp)
+    # ── shared right panel ────────────────────────────────────────────────────
 
-        spots_row = QWidget()
-        sr = QHBoxLayout(spots_row)
-        sr.setContentsMargins(0, 0, 0, 0)
-        sr.addWidget(QLabel('Number of spots:'))
-        self._spin_spots = QSpinBox()
-        self._spin_spots.setRange(1, 500)
-        self._spin_spots.setValue(cfg.get('dh_n_spots', 1))
-        self._spin_spots.setFixedWidth(70)
-        self._spin_spots.valueChanged.connect(self._on_spots_changed)
-        sr.addWidget(self._spin_spots)
-        sr.addStretch()
-        bgl_outer.addWidget(spots_row)
-
-        vec_row = QWidget()
-        vr = QHBoxLayout(vec_row)
-        vr.setContentsMargins(0, 0, 0, 0)
-        vr.addWidget(QLabel('VEC file:'))
-        self._lbl_vec = ElidedLabel('—')
-        self._lbl_vec.setStyleSheet(f'color: {COLOR_DIM};')
-        vr.addWidget(self._lbl_vec, 1)
-        bgl_outer.addWidget(vec_row)
-
-        bin_mode_row = QWidget()
-        bgl = QHBoxLayout(bin_mode_row)
-        bgl.setContentsMargins(0, 0, 0, 0)
-        self._rb_bright = QRadioButton('Bright')
-        self._rb_dark   = QRadioButton('Dark')
-        self._bin_group = QButtonGroup(self)
-        self._bin_group.addButton(self._rb_bright)
-        self._bin_group.addButton(self._rb_dark)
-        if cfg.get('dh_bin_mode', 'dark') == 'bright':
-            self._rb_bright.setChecked(True)
-        else:
-            self._rb_dark.setChecked(True)
-        bgl.addWidget(self._rb_bright)
-        bgl.addWidget(self._rb_dark)
-        self._lbl_bin = ElidedLabel('—')
-        self._lbl_bin.setStyleSheet(f'color: {COLOR_DIM};')
-        bgl.addWidget(self._lbl_bin, 1)
-        self._rb_bright.toggled.connect(self._on_bin_mode_changed)
-        bgl_outer.addWidget(bin_mode_row)
-
-        freq_row = QWidget()
-        fh = QHBoxLayout(freq_row)
-        fh.setContentsMargins(0, 0, 0, 0)
-        fh.addWidget(QLabel('Rate (Hz):'))
-        self._le_freq = QLineEdit(str(cfg.get('dh_freq', 20.0)))
-        self._le_freq.setFixedWidth(80)
-        fh.addWidget(self._le_freq)
-        fh.addStretch()
-        bgl_outer.addWidget(freq_row)
-
-        lv.addWidget(bin_grp)
-
-        # Holography group: phasemask file path, folder, detected count, order list
-        holo_grp = QGroupBox('Holography')
-        pml = QVBoxLayout(holo_grp)
-
-        # TCP WaveFront IV status row
-        tcp_row = QWidget()
-        tr_ = QHBoxLayout(tcp_row)
-        tr_.setContentsMargins(0, 0, 0, 0)
-        tr_.setSpacing(6)
-        self._dot_tcp = StatusDot(COLOR_DIM)
-        tr_.addWidget(self._dot_tcp)
-        tr_.addWidget(QLabel('TCP WaveFront IV'))
-        tr_.addStretch()
-        self._btn_reconnect = QPushButton('Reconnect')
-        self._btn_reconnect.setFixedWidth(90)
-        self._btn_reconnect.clicked.connect(self._reconnect_slm)
-        tr_.addWidget(self._btn_reconnect)
-        pml.addWidget(tcp_row)
-
-        pm_folder_row = QWidget()
-        pfh = QHBoxLayout(pm_folder_row)
-        pfh.setContentsMargins(0, 0, 0, 0)
-        self._lbl_pm_folder = ElidedLabel(self.params.get('wavefront_folder', '—'))
-        self._lbl_pm_folder.setStyleSheet(f'color: {COLOR_DIM};')
-        pfh.addWidget(self._lbl_pm_folder, 1)
-        btn_open_pm = QPushButton('Open')
-        btn_open_pm.setMinimumWidth(60)
-        btn_open_pm.setContentsMargins(6, 0, 6, 0)
-        btn_open_pm.clicked.connect(
-            lambda: open_folder(self.params.get('wavefront_folder', '')))
-        pfh.addWidget(btn_open_pm)
-        pml.addWidget(pm_folder_row)
-
-        det_row = QWidget()
-        dh = QHBoxLayout(det_row)
-        dh.setContentsMargins(0, 0, 0, 0)
-        self._lbl_pm_detected = QLabel('—')
-        self._lbl_pm_detected.setStyleSheet(f'color: {COLOR_DIM};')
-        dh.addWidget(self._lbl_pm_detected, 1)
-        btn_scan = QPushButton('Scan')
-        btn_scan.setMinimumWidth(60)
-        btn_scan.setContentsMargins(6, 0, 6, 0)
-        btn_scan.clicked.connect(self._scan_pm_folder)
-        dh.addWidget(btn_scan)
-        pml.addWidget(det_row)
-
-        pm_file_row = QWidget()
-        pfr = QHBoxLayout(pm_file_row)
-        pfr.setContentsMargins(0, 0, 0, 0)
-        pfr.addWidget(QLabel('PM order file:'))
-        self._lbl_pm = ElidedLabel('—')
-        self._lbl_pm.setStyleSheet(f'color: {COLOR_DIM};')
-        pfr.addWidget(self._lbl_pm, 1)
-        pml.addWidget(pm_file_row)
-
-        self._pm_listbox = QListWidget()
-        self._pm_listbox.setFont(QFont('Consolas', 7))
-        self._pm_listbox.setSelectionMode(QListWidget.NoSelection)
-        self._pm_listbox.setFocusPolicy(Qt.NoFocus)
-        self._pm_listbox.setMinimumHeight(8 * 20)  # at least 5 rows visible
-        pml.addWidget(self._pm_listbox, 1)
-
-        lv.addWidget(holo_grp, 1)
-
-        # ── right column ──
+    def _build_right_panel(self) -> QWidget:
+        """Builds timer + PHASEMASK/SHUTTER indicators + RUN/STOP buttons.
+        Assigns self._timer_panel, self._ind_pm, self._ind_laser,
+        self._btn_run, self._btn_stop.
+        """
         right = QWidget()
         right.setMinimumWidth(300)
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
 
-        # Timer
         self._timer_panel = SciTimerPanel()
         rv.addWidget(self._timer_panel)
 
-        # Signal indicators
         ind_frame = QWidget()
         ind_frame.setStyleSheet(f'background: {FO_BG};')
         ih = QHBoxLayout(ind_frame)
         ih.setContentsMargins(10, 6, 10, 6)
 
-        pm_ind = QWidget()
-        piv = QVBoxLayout(pm_ind)
-        piv.setAlignment(Qt.AlignCenter)
-        piv.setContentsMargins(0, 0, 0, 0)
-        self._ind_pm = IndicatorDot('phasemask')
-        piv.addWidget(self._ind_pm, 0, Qt.AlignCenter)
-        lbl_pm_ind = QLabel('PHASEMASK')
-        lbl_pm_ind.setFont(QFont('Consolas', 7, QFont.Bold))
-        lbl_pm_ind.setStyleSheet(f'color: {FO_OFF}; background: transparent;')
-        lbl_pm_ind.setAlignment(Qt.AlignCenter)
-        piv.addWidget(lbl_pm_ind)
-        ih.addWidget(pm_ind, 1)
-
-        sh_ind = QWidget()
-        siv = QVBoxLayout(sh_ind)
-        siv.setAlignment(Qt.AlignCenter)
-        siv.setContentsMargins(0, 0, 0, 0)
-        self._ind_laser = IndicatorDot('shutter')
-        siv.addWidget(self._ind_laser, 0, Qt.AlignCenter)
-        lbl_sh_ind = QLabel('SHUTTER')
-        lbl_sh_ind.setFont(QFont('Consolas', 7, QFont.Bold))
-        lbl_sh_ind.setStyleSheet(f'color: {FO_OFF}; background: transparent;')
-        lbl_sh_ind.setAlignment(Qt.AlignCenter)
-        siv.addWidget(lbl_sh_ind)
-        ih.addWidget(sh_ind, 1)
+        for attr, mode, label_text in (
+            ('_ind_pm',    'phasemask', 'PHASEMASK'),
+            ('_ind_laser', 'shutter',   'SHUTTER'),
+        ):
+            cell = QWidget()
+            cv = QVBoxLayout(cell)
+            cv.setAlignment(Qt.AlignCenter)
+            cv.setContentsMargins(0, 0, 0, 0)
+            dot = IndicatorDot(mode)
+            setattr(self, attr, dot)
+            cv.addWidget(dot, 0, Qt.AlignCenter)
+            lbl = QLabel(label_text)
+            lbl.setFont(QFont('Consolas', 7, QFont.Bold))
+            lbl.setStyleSheet(f'color: {FO_OFF}; background: transparent;')
+            lbl.setAlignment(Qt.AlignCenter)
+            cv.addWidget(lbl)
+            ih.addWidget(cell, 1)
 
         rv.addWidget(ind_frame)
 
-        # RUN / STOP
         btn_row = QWidget()
         br = QHBoxLayout(btn_row)
         br.setContentsMargins(0, 0, 0, 0)
-        self._btn_run = _make_run_btn(self)
+        self._btn_run  = _make_run_btn(self)
         self._btn_stop = _make_stop_btn(self)
         br.addWidget(self._btn_run, 3)
         br.addWidget(self._btn_stop, 1)
         rv.addWidget(btn_row)
         rv.addStretch()
 
-        main.addWidget(left, 1)
-        main.addWidget(right, 1)
-
-        # signals
         self._btn_run.clicked.connect(self._on_run)
         self._btn_stop.clicked.connect(self._on_stop)
-        self._le_freq.textChanged.connect(self._update_preview)
-        self._spin_spots.valueChanged.connect(self._update_preview)
 
-        # initial state
-        self._on_spots_changed()
-        self._on_bin_mode_changed()
-        self._scan_pm_folder()
-        self._update_preview()
+        return right
 
-    # -- path resolution ------------------------------------------------------
+    # ── phasemask list ────────────────────────────────────────────────────────
 
-    def _vec_path(self) -> str:
-        n = self._spin_spots.value()
-        stim_folder = self.params.get('dh_stim_folder', '')
-        vec_sub     = self.params.get('vec_subfolder', 'VEC')
-        vec_pattern = self.params.get('dh_vec_pattern', '')
-        if not stim_folder or not vec_pattern:
-            return ''
-        fname = vec_pattern.replace('{n_spots}', f'{n:03d}')
-        p = os.path.normpath(os.path.join(stim_folder, vec_sub, fname))
-        return p if os.path.isfile(p) else ''
+    def _load_pm_lines(self):
+        pm_path = self._pm_path()
+        self._pm_listbox.clear()
+        self._pm_lines = []
+        if not os.path.isfile(pm_path):
+            return
+        with open(pm_path, 'r') as f:
+            self._pm_lines = f.read().splitlines()
+        for line in self._pm_lines:
+            self._pm_listbox.addItem(os.path.basename(line))
+        self._pm_index = 0
+        self._update_pm_highlight()
 
-    def _pm_path(self) -> str:
-        n = self._spin_spots.value()
-        stim_folder = self.params.get('dh_stim_folder', '')
-        pm_sub      = self.params.get('phasemasks_subfolder', 'Phasemasks')
-        pm_pattern  = self.params.get('dh_phasemask_pattern', '')
-        if not stim_folder or not pm_pattern:
-            return ''
-        fname = pm_pattern.replace('{n_spots}', f'{n:03d}')
-        return os.path.normpath(os.path.join(stim_folder, pm_sub, fname))
+    def _update_pm_highlight(self):
+        for i in range(self._pm_listbox.count()):
+            item = self._pm_listbox.item(i)
+            if i == self._pm_index:
+                item.setBackground(QColor(FO_MID))
+                item.setForeground(QColor(FO_BG))
+            else:
+                item.setBackground(QColor(COLOR_CARD))
+                item.setForeground(QColor(COLOR_DIM))
+        if 0 <= self._pm_index < self._pm_listbox.count():
+            self._pm_listbox.scrollToItem(self._pm_listbox.item(self._pm_index))
 
-    # -- callbacks ------------------------------------------------------------
+    # ── spot detection ────────────────────────────────────────────────────────
+
+    def _scan_pm_folder(self):
+        folder  = self.params.get('wavefront_folder', '')
+        pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
+        n = sync.count_spots_from_folder(folder, pattern)
+        if n == 0:
+            self._lbl_pm_detected.setText('0 spots found')
+            self._lbl_pm_detected.setStyleSheet('color: #FF4444;')
+        else:
+            self._lbl_pm_detected.setText(f'{n} spot{"s" if n > 1 else ""} detected')
+            self._lbl_pm_detected.setStyleSheet('color: #00FF00;')
+            self._on_spots_detected(n)
+
+    def _on_spots_detected(self, n: int):
+        """Called when scan finds n > 0 spots. Override in subclass to react."""
+        pass
+
+    # ── preview ───────────────────────────────────────────────────────────────
 
     def _update_preview(self):
         if self._worker:
@@ -1106,105 +975,30 @@ class DhTab(QWidget):
             return
         self._timer_panel.set_ready(total, freq)
 
-    def _reconnect_slm(self):
-        ok = self._slm.connect()
-        self._dot_tcp.set_color(FO_ON if ok else COLOR_DIM)
-        status = 'connected' if ok else 'failed'
-        self.console.log(
-            f'[SLM] TCP {status} ({self._slm._host}:{self._slm._port})',
-            'info' if ok else 'warn')
+    # ── trigger tracking ──────────────────────────────────────────────────────
 
-    def _scan_pm_folder(self):
-        folder  = self.params.get('wavefront_folder', '')
-        pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
-        n = sync.count_spots_from_folder(folder, pattern)
-        if n == 0:
-            self._lbl_pm_detected.setText('0 spots found')
-            self._lbl_pm_detected.setStyleSheet('color: #FF4444;')
-        else:
-            self._lbl_pm_detected.setText(
-                f'{n} spot{"s" if n > 1 else ""} detected')
-            self._lbl_pm_detected.setStyleSheet('color: #00FF00;')
-            self._spin_spots.setValue(n)
-
-    def _on_spots_changed(self):
-        n       = self._spin_spots.value()
-        n_str   = f'{n:03d}'
-        stim    = self.params.get('dh_stim_folder', '')
-        vec_sub = self.params.get('vec_subfolder', 'VEC')
-        vec_pat = self.params.get('dh_vec_pattern', '')
-        pm_sub  = self.params.get('phasemasks_subfolder', 'Phasemasks')
-        pm_pat  = self.params.get('dh_phasemask_pattern', '')
-        self._lbl_vec.setText(
-            os.path.normpath(os.path.join(stim, vec_sub, vec_pat.replace('{n_spots}', n_str))))
-        self._lbl_pm.setText(
-            os.path.normpath(os.path.join(stim, pm_sub, pm_pat.replace('{n_spots}', n_str))))
-        self._load_pm_lines()
-
-    def _on_bin_mode_changed(self):
-        mode = 'bright' if self._rb_bright.isChecked() else 'dark'
-        stim    = self.params.get('dh_stim_folder', '')
-        bin_sub = self.params.get('bin_subfolder', 'BIN')
-        self._lbl_bin.setText(f'{os.path.normpath(os.path.join(stim, bin_sub))}  [{mode}]')
-
-    # -- phasemask order list -------------------------------------------------
-
-    def _load_pm_lines(self):
-        pm_path = self._pm_path()
-        self._pm_listbox.clear()
-        self._pm_lines = []
-        if not os.path.isfile(pm_path):
-            return
-        with open(pm_path, 'r') as f:
-            lines = f.read().splitlines()
-        self._pm_lines = lines  # keep all lines including repos (line 0)
-        for line in self._pm_lines:
-            self._pm_listbox.addItem(os.path.basename(line))
-        self._pm_index = 0
-        self._update_pm_highlight()
-
-    def _update_pm_highlight(self):
-        for i in range(self._pm_listbox.count()):
-            item = self._pm_listbox.item(i)
-            if i == self._pm_index:
-                item.setBackground(QColor(FO_MID))
-                item.setForeground(QColor(FO_BG))
-            else:
-                item.setBackground(QColor(COLOR_CARD))
-                item.setForeground(QColor(COLOR_DIM))
-        if 0 <= self._pm_index < self._pm_listbox.count():
-            self._pm_listbox.scrollToItem(
-                self._pm_listbox.item(self._pm_index))
-
-    # -- trigger tracking slot ------------------------------------------------
-
+    @Slot(int)
     def _on_trigger_update(self, count: int):
-        self._timer_panel.update_progress(
-            count, self._total_triggers, self._freq_hz)
+        self._timer_panel.update_progress(count, self._total_triggers, self._freq_hz)
 
-        slm = self._vec_col_slm
-        sht = self._vec_col_shutter
-        old = self._last_processed
-
-        new_pm = 0
+        slm_col = self._vec_col_slm
+        sht_col = self._vec_col_shutter
+        new_pm  = 0
         last_shutter = self._shutter_open
 
-        for i in range(old, min(count, len(slm))):
-            if slm[i] == 1:
+        for i in range(self._last_processed, min(count, len(slm_col))):
+            if slm_col[i] == 1:
                 new_pm += 1
-            if i < len(sht):
-                last_shutter = bool(sht[i])
+            if i < len(sht_col):
+                last_shutter = bool(sht_col[i])
 
         if new_pm > 0:
-            self._pm_index = min(self._pm_index + new_pm,
-                                 len(self._pm_lines) - 1)
+            self._pm_index = min(self._pm_index + new_pm, len(self._pm_lines) - 1)
             self._ind_pm.flash()
             self._update_pm_highlight()
             if 0 <= self._pm_index < len(self._pm_lines):
-                path = self._pm_lines[self._pm_index]
-                if not self._slm.send_mask(path):
-                    self.console.log('[SLM] send failed — TCP disconnected', 'warn')
-                    self._dot_tcp.set_color(COLOR_DIM)
+                if not self._slm.send_mask(self._pm_lines[self._pm_index]):
+                    self.console.log('[SLM] send failed — script folder unreachable', 'warn')
 
         if last_shutter != self._shutter_open:
             self._shutter_open = last_shutter
@@ -1212,7 +1006,315 @@ class DhTab(QWidget):
 
         self._last_processed = count
 
-    # -- run / stop -----------------------------------------------------------
+    # ── protocol setup ────────────────────────────────────────────────────────
+
+    def _start_protocol(self, freq_hz: float):
+        """Reset tracking state, load vectors, arm waveform output and trigger counter."""
+        self._freq_hz        = freq_hz
+        self._last_processed = 0
+        self._pm_index       = 0
+        self._shutter_open   = False
+        self._btn_run.setEnabled(False)
+        self._btn_run.setText('RUNNING…')
+        self._btn_stop.setEnabled(True)
+
+        vec_p = self._vec_path()
+        if vec_p:
+            self._vec_col_slm, self._vec_col_shutter = sync.read_vec_columns(vec_p)
+            n_pm  = sum(self._vec_col_slm)
+            n_sht = sum(self._vec_col_shutter)
+            self.console.log(
+                f'{self._tab_prefix} Vec loaded: {len(self._vec_col_slm)} triggers, '
+                f'{n_pm} phasemask events, {n_sht} shutter-open events')
+
+        self._load_pm_lines()
+
+        nidaq   = self.params.get('nidaq', {})
+        device  = nidaq.get('device', 'Dev1')
+        pfi_clk = nidaq.get('pfi_clock', 0)
+        ao_sht  = nidaq.get('ao_shutter', 0)
+        ao_slm  = nidaq.get('ao_slm', 1)
+        if self._vec_col_shutter and self._vec_col_slm:
+            try:
+                self._waveform = sync.WaveformOutput(
+                    device, pfi_clk, ao_sht, ao_slm,
+                    self._vec_col_shutter, self._vec_col_slm)
+                self._waveform.start()
+                self.console.log(
+                    f'{self._tab_prefix} Waveform output armed '
+                    f'({device}/ao{ao_sht}+ao{ao_slm}, clocked on PFI{pfi_clk})')
+            except Exception as e:
+                self._waveform = None
+                self.console.log(
+                    f'{self._tab_prefix} Waveform output unavailable: {e}', 'warn')
+
+        self._arm_worker(freq_hz)
+
+    def _arm_worker(self, freq_hz: float):
+        total = 0
+        vec_p = self._vec_path()
+        if vec_p:
+            try:
+                total = sync.count_vec_triggers(vec_p)
+            except Exception as e:
+                self.console.log(f'{self._tab_prefix} Cannot read vec: {e}', 'warn')
+
+        self._total_triggers = total
+        nidaq   = self.params.get('nidaq', {})
+        device  = nidaq.get('device', 'Dev1')
+        pfi_idx = nidaq.get('pfi_clock', 0)
+        try:
+            self._counter = sync.TriggerCounter(device, pfi_idx)
+            self.console.log(
+                f'{self._tab_prefix} NI-DAQ counter armed ({device}/PFI{pfi_idx})')
+        except Exception as e:
+            self._counter = None
+            self.console.log(f'{self._tab_prefix} NI-DAQ counter unavailable: {e}', 'warn')
+
+        timeout = self.params.get('trigger_timeout_s', 10)
+        self._timer_panel.set_armed(total, freq_hz)
+
+        self._worker = TriggerWorker(self._counter, total, timeout)
+        self._thread = QThread()
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.trigger_update.connect(self._on_trigger_update)
+        self._worker.stim_started.connect(self._on_stim_started)
+        self._worker.stim_complete.connect(self._on_complete)
+        self._worker.stim_timeout.connect(self._on_timeout)
+        self._worker.finished.connect(self._thread.quit)
+        self._thread.start()
+
+    # ── stim lifecycle ────────────────────────────────────────────────────────
+
+    def _on_stop(self):
+        dmd.stop(getattr(self, '_proc', None), self.params.get('film_exe', ''))
+        self.console.log(f'{self._tab_prefix} Protocol interrupted.', 'warn')
+
+    @Slot()
+    def _on_stim_started(self):
+        self.console.log(f'{self._tab_prefix} >> STIM STARTED')
+
+    @Slot()
+    def _on_complete(self):
+        self._timer_panel.set_complete()
+        self.console.log(f'{self._tab_prefix} ■ STIM COMPLETE')
+        dmd.stop(self._proc, self.params.get('film_exe', ''))
+
+    @Slot()
+    def _on_timeout(self):
+        timeout = self.params.get('trigger_timeout_s', 10)
+        self.console.log(
+            f'{self._tab_prefix} ■ No trigger for {timeout}s — stopping', 'warn')
+        dmd.stop(self._proc, self.params.get('film_exe', ''))
+
+    @Slot()
+    def _do_cleanup(self):
+        if self._worker:
+            self._worker.stop()
+            self._worker = None
+        if self._thread and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait(2000)
+            self._thread = None
+        if self._counter:
+            self._counter.close()
+            self._counter = None
+        if self._waveform:
+            self._waveform.close()
+            self._waveform = None
+        self._ind_laser.set_active(False)
+        self._shutter_open = False
+        self._release_run()
+
+    def reset_ui(self):
+        self._btn_run.setEnabled(True)
+        self._btn_run.setText('RUN PROTOCOL')
+        self._btn_stop.setEnabled(False)
+        self._pm_index     = 0
+        self._shutter_open = False
+        self._ind_laser.set_active(False)
+        self._update_pm_highlight()
+        self._update_preview()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ── DH tab ───────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+
+class DhTab(_HoloTabBase):
+
+    _tab_prefix = '[DH]'
+
+    def _build(self):
+        cfg = self.config
+        main = QHBoxLayout(self)
+        main.setContentsMargins(8, 8, 8, 8)
+        main.setSpacing(12)
+
+        # ── left column ──
+        left = QWidget()
+        left.setMinimumWidth(360)
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+
+        bin_grp = QGroupBox('DMD')
+        bgl = QVBoxLayout(bin_grp)
+
+        spots_row = QWidget()
+        sr = QHBoxLayout(spots_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.addWidget(QLabel('Number of spots:'))
+        self._spin_spots = QSpinBox()
+        self._spin_spots.setRange(1, 500)
+        self._spin_spots.setValue(cfg.get('dh_n_spots', 1))
+        self._spin_spots.setFixedWidth(70)
+        sr.addWidget(self._spin_spots)
+        sr.addStretch()
+        bgl.addWidget(spots_row)
+
+        vec_row = QWidget()
+        vr = QHBoxLayout(vec_row)
+        vr.setContentsMargins(0, 0, 0, 0)
+        vr.addWidget(QLabel('VEC file:'))
+        self._lbl_vec = ElidedLabel('—')
+        self._lbl_vec.setStyleSheet(f'color: {COLOR_DIM};')
+        vr.addWidget(self._lbl_vec, 1)
+        bgl.addWidget(vec_row)
+
+        bin_mode_row = QWidget()
+        bmh = QHBoxLayout(bin_mode_row)
+        bmh.setContentsMargins(0, 0, 0, 0)
+        self._rb_bright = QRadioButton('Bright')
+        self._rb_dark   = QRadioButton('Dark')
+        self._bin_group = QButtonGroup(self)
+        self._bin_group.addButton(self._rb_bright)
+        self._bin_group.addButton(self._rb_dark)
+        (self._rb_bright if cfg.get('dh_bin_mode', 'dark') == 'bright'
+         else self._rb_dark).setChecked(True)
+        bmh.addWidget(self._rb_bright)
+        bmh.addWidget(self._rb_dark)
+        self._lbl_bin = ElidedLabel('—')
+        self._lbl_bin.setStyleSheet(f'color: {COLOR_DIM};')
+        bmh.addWidget(self._lbl_bin, 1)
+        self._rb_bright.toggled.connect(self._on_bin_mode_changed)
+        bgl.addWidget(bin_mode_row)
+
+        freq_row = QWidget()
+        fh = QHBoxLayout(freq_row)
+        fh.setContentsMargins(0, 0, 0, 0)
+        fh.addWidget(QLabel('Rate (Hz):'))
+        self._le_freq = QLineEdit(str(cfg.get('dh_freq', 20.0)))
+        self._le_freq.setFixedWidth(80)
+        fh.addWidget(self._le_freq)
+        fh.addStretch()
+        bgl.addWidget(freq_row)
+
+        lv.addWidget(bin_grp)
+
+        holo_grp = QGroupBox('Holography')
+        pml = QVBoxLayout(holo_grp)
+
+        pm_folder_row = QWidget()
+        pfh = QHBoxLayout(pm_folder_row)
+        pfh.setContentsMargins(0, 0, 0, 0)
+        self._lbl_pm_folder = ElidedLabel(self.params.get('wavefront_folder', '—'))
+        self._lbl_pm_folder.setStyleSheet(f'color: {COLOR_DIM};')
+        pfh.addWidget(self._lbl_pm_folder, 1)
+        btn_open_pm = QPushButton('Open')
+        btn_open_pm.setMinimumWidth(60)
+        btn_open_pm.clicked.connect(
+            lambda: open_folder(self.params.get('wavefront_folder', '')))
+        pfh.addWidget(btn_open_pm)
+        pml.addWidget(pm_folder_row)
+
+        det_row = QWidget()
+        drh = QHBoxLayout(det_row)
+        drh.setContentsMargins(0, 0, 0, 0)
+        self._lbl_pm_detected = QLabel('—')
+        self._lbl_pm_detected.setStyleSheet(f'color: {COLOR_DIM};')
+        drh.addWidget(self._lbl_pm_detected, 1)
+        btn_scan = QPushButton('Scan')
+        btn_scan.setMinimumWidth(60)
+        btn_scan.clicked.connect(self._scan_pm_folder)
+        drh.addWidget(btn_scan)
+        pml.addWidget(det_row)
+
+        pm_file_row = QWidget()
+        pfr = QHBoxLayout(pm_file_row)
+        pfr.setContentsMargins(0, 0, 0, 0)
+        pfr.addWidget(QLabel('PM order file:'))
+        self._lbl_pm = ElidedLabel('—')
+        self._lbl_pm.setStyleSheet(f'color: {COLOR_DIM};')
+        pfr.addWidget(self._lbl_pm, 1)
+        pml.addWidget(pm_file_row)
+
+        self._pm_listbox = QListWidget()
+        self._pm_listbox.setFont(QFont('Consolas', 7))
+        self._pm_listbox.setSelectionMode(QListWidget.NoSelection)
+        self._pm_listbox.setFocusPolicy(Qt.NoFocus)
+        self._pm_listbox.setMinimumHeight(8 * 20)
+        pml.addWidget(self._pm_listbox, 1)
+
+        lv.addWidget(holo_grp, 1)
+
+        main.addWidget(left, 1)
+        main.addWidget(self._build_right_panel(), 1)
+
+        self._le_freq.textChanged.connect(self._update_preview)
+        self._spin_spots.valueChanged.connect(self._on_spots_changed)
+        self._spin_spots.valueChanged.connect(self._update_preview)
+
+        self._on_spots_changed()
+        self._on_bin_mode_changed()
+        self._scan_pm_folder()
+        self._update_preview()
+
+    # -- paths --
+
+    def _vec_path(self) -> str:
+        n           = self._spin_spots.value()
+        stim_folder = self.params.get('dh_stim_folder', '')
+        vec_pattern = self.params.get('dh_vec_pattern', '')
+        if not stim_folder or not vec_pattern:
+            return ''
+        p = os.path.normpath(os.path.join(
+            stim_folder, self.params.get('vec_subfolder', 'VEC'),
+            vec_pattern.replace('{n_spots}', f'{n:03d}')))
+        return p if os.path.isfile(p) else ''
+
+    def _pm_path(self) -> str:
+        n           = self._spin_spots.value()
+        stim_folder = self.params.get('dh_stim_folder', '')
+        pm_pattern  = self.params.get('dh_phasemask_pattern', '')
+        if not stim_folder or not pm_pattern:
+            return ''
+        return os.path.normpath(os.path.join(
+            stim_folder, self.params.get('phasemasks_subfolder', 'Phasemasks'),
+            pm_pattern.replace('{n_spots}', f'{n:03d}')))
+
+    # -- callbacks --
+
+    def _on_spots_detected(self, n: int):
+        self._spin_spots.setValue(n)
+
+    def _on_spots_changed(self):
+        n     = self._spin_spots.value()
+        n_str = f'{n:03d}'
+        stim  = self.params.get('dh_stim_folder', '')
+        self._lbl_vec.setText(os.path.normpath(os.path.join(
+            stim, self.params.get('vec_subfolder', 'VEC'),
+            self.params.get('dh_vec_pattern', '').replace('{n_spots}', n_str))))
+        self._lbl_pm.setText(os.path.normpath(os.path.join(
+            stim, self.params.get('phasemasks_subfolder', 'Phasemasks'),
+            self.params.get('dh_phasemask_pattern', '').replace('{n_spots}', n_str))))
+        self._load_pm_lines()
+
+    def _on_bin_mode_changed(self):
+        mode    = 'bright' if self._rb_bright.isChecked() else 'dark'
+        stim    = self.params.get('dh_stim_folder', '')
+        bin_sub = self.params.get('bin_subfolder', 'BIN')
+        self._lbl_bin.setText(f'{os.path.normpath(os.path.join(stim, bin_sub))}  [{mode}]')
 
     def _on_run(self):
         try:
@@ -1229,54 +1331,12 @@ class DhTab(QWidget):
             return
 
         self._save_config()
-        self._freq_hz = freq_hz
-        self._last_processed = 0
-        self._pm_index       = 0
-        self._shutter_open   = False
-        self._btn_run.setEnabled(False)
-        self._btn_run.setText('RUNNING…')
-        self._btn_stop.setEnabled(True)
-
-        # load vec columns (swapped — see plan note)
-        vec_p = self._vec_path()
-        if vec_p:
-            self._vec_col_slm, self._vec_col_shutter = sync.read_vec_columns(vec_p)
-            n_pm  = sum(self._vec_col_slm)
-            n_sht = sum(self._vec_col_shutter)
-            self.console.log(
-                f'[DH] Vec loaded: {len(self._vec_col_slm)} triggers, '
-                f'{n_pm} phasemask events, {n_sht} shutter-open events')
-
-        # load phasemask order
-        self._load_pm_lines()
-
-        # arm waveform output (hardware-timed shutter + SLM)
-        nidaq   = self.params.get('nidaq', {})
-        device  = nidaq.get('device', 'Dev1')
-        pfi_clk = nidaq.get('pfi_clock', 0)
-        ao_sht  = nidaq.get('ao_shutter', 0)
-        ao_slm  = nidaq.get('ao_slm', 1)
-        if self._vec_col_shutter and self._vec_col_slm:
-            try:
-                self._waveform = sync.WaveformOutput(
-                    device, pfi_clk, ao_sht, ao_slm,
-                    self._vec_col_shutter, self._vec_col_slm)
-                self._waveform.start()
-                self.console.log(
-                    f'[DH] Waveform output armed ({device}/ao{ao_sht}+ao{ao_slm}, '
-                    f'clocked on PFI{pfi_clk})')
-            except Exception as e:
-                self._waveform = None
-                self.console.log(f'[DH] Waveform output unavailable: {e}', 'warn')
-
-        # arm counter + worker
-        self._arm_worker(freq_hz)
+        self._start_protocol(freq_hz)
 
         def _run():
             try:
                 self._proc = dmd.run_dh(
-                    n_spots, bin_mode, freq_hz,
-                    self.params, self.console.log)
+                    n_spots, bin_mode, freq_hz, self.params, self.console.log)
                 _active_procs.append(self._proc)
                 self._proc.wait()
                 if self._proc.returncode not in (0, -1, 1):
@@ -1291,125 +1351,14 @@ class DhTab(QWidget):
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_stop(self):
-        dmd.stop(getattr(self, '_proc', None), self.params.get('film_exe', ''))
-        self.console.log('[DH] Protocol interrupted.', 'warn')
-
-    def _arm_worker(self, freq_hz: float):
-        total = 0
-        vec_p = self._vec_path()
-        if vec_p:
-            try:
-                total = sync.count_vec_triggers(vec_p)
-            except Exception as e:
-                self.console.log(f'[DH] Cannot read vec: {e}', 'warn')
-
-        self._total_triggers = total
-        nidaq   = self.params.get('nidaq', {})
-        device  = nidaq.get('device', 'Dev1')
-        pfi_idx = nidaq.get('pfi_clock', 0)
-        try:
-            self._counter = sync.TriggerCounter(device, pfi_idx)
-            self.console.log(
-                f'[DH] NI-DAQ trigger counter armed ({device}/PFI{pfi_idx})')
-        except Exception as e:
-            self._counter = None
-            self.console.log(f'[DH] NI-DAQ counter unavailable: {e}', 'warn')
-
-        timeout = self.params.get('trigger_timeout_s', 10)
-        self._timer_panel.set_armed(total, freq_hz)
-
-        ok = self._slm.connect()
-        self._dot_tcp.set_color(FO_ON if ok else COLOR_DIM)
-        if not ok:
-            self.console.log('[SLM] TCP connection failed — phasemask sending disabled', 'warn')
-
-        self._worker = TriggerWorker(self._counter, total, timeout)
-        self._thread = QThread()
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.trigger_update.connect(self._on_trigger_update)
-        self._worker.stim_started.connect(self._on_stim_started)
-        self._worker.stim_complete.connect(self._on_complete)
-        self._worker.stim_timeout.connect(self._on_timeout)
-        self._worker.finished.connect(self._thread.quit)
-        self._thread.start()
-
-    @Slot()
-    def _on_stim_started(self):
-        self.console.log('[DH] >> STIM STARTED')
-
-    @Slot()
-    def _on_complete(self):
-        self._timer_panel.set_complete()
-        self.console.log('[DH] ■ STIM COMPLETE')
-        dmd.stop(self._proc, self.params.get('film_exe', ''))
-
-    @Slot()
-    def _on_timeout(self):
-        timeout = self.params.get('trigger_timeout_s', 10)
-        self.console.log(f'[DH] ■ No trigger for {timeout}s — stopping', 'warn')
-        dmd.stop(self._proc, self.params.get('film_exe', ''))
-
-    @Slot()
-    def _do_cleanup(self):
-        """Runs in main thread via signal — safe to touch Qt widgets."""
-        if self._worker:
-            self._worker.stop()
-            self._worker = None
-        if self._thread and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait(2000)
-            self._thread = None
-        if self._counter:
-            self._counter.close()
-            self._counter = None
-        if self._waveform:
-            self._waveform.close()
-            self._waveform = None
-        self._ind_laser.set_active(False)
-        self._shutter_open = False
-        self._slm.disconnect()
-        self._dot_tcp.set_color(COLOR_DIM)
-        self._release_run()
-
-    def reset_ui(self):
-        self._btn_run.setEnabled(True)
-        self._btn_run.setText('RUN PROTOCOL')
-        self._btn_stop.setEnabled(False)
-        self._pm_index     = 0
-        self._shutter_open = False
-        self._ind_laser.set_active(False)
-        self._update_pm_highlight()
-        self._update_preview()
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # ── VDH tab ──────────────────────────────────────────────────────────────────
 # ═════════════════════════════════════════════════════════════════════════════
 
-class VdhTab(QWidget):
+class VdhTab(_HoloTabBase):
 
     _tab_prefix = '[VDH]'
-    _request_cleanup = Signal()
-
-    def __init__(self, console: ConsoleLog, params: dict, config: dict,
-                 save_config, acquire_run, release_run):
-        super().__init__()
-        self.console      = console
-        self.params       = params
-        self.config       = config
-        self._save_config = save_config
-        self._acquire_run = acquire_run
-        self._release_run = release_run
-        self._proc        = None
-        self._worker      = None
-        self._thread      = None
-        self._counter     = None
-        self._total_triggers = 0
-        self._freq_hz        = 0.0
-        self._request_cleanup.connect(self._do_cleanup)
-        self._build()
 
     def _build(self):
         cfg = self.config
@@ -1423,7 +1372,6 @@ class VdhTab(QWidget):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
 
-        # DMD
         files_grp = QGroupBox('DMD')
         fl = QVBoxLayout(files_grp)
 
@@ -1434,29 +1382,17 @@ class VdhTab(QWidget):
             initialdir=self.params.get('binvecs_root', ''))
         fl.addWidget(self._folder_row)
 
-        bin_row = QWidget()
-        bh = QHBoxLayout(bin_row)
-        bh.setContentsMargins(0, 0, 0, 0)
-        bh.addWidget(QLabel('.bin file'))
-        self._combo_bin = QComboBox()
-        bh.addWidget(self._combo_bin, 1)
-        fl.addWidget(bin_row)
-
-        vec_row = QWidget()
-        vch = QHBoxLayout(vec_row)
-        vch.setContentsMargins(0, 0, 0, 0)
-        vch.addWidget(QLabel('.vec file'))
-        self._combo_vec = QComboBox()
-        vch.addWidget(self._combo_vec, 1)
-        fl.addWidget(vec_row)
-
-        pm_row = QWidget()
-        pmh = QHBoxLayout(pm_row)
-        pmh.setContentsMargins(0, 0, 0, 0)
-        pmh.addWidget(QLabel('Phase mask'))
-        self._combo_pm = QComboBox()
-        pmh.addWidget(self._combo_pm, 1)
-        fl.addWidget(pm_row)
+        for attr, label in (('_combo_bin', '.bin file'),
+                             ('_combo_vec', '.vec file'),
+                             ('_combo_pm',  'Phase mask')):
+            row = QWidget()
+            rh  = QHBoxLayout(row)
+            rh.setContentsMargins(0, 0, 0, 0)
+            rh.addWidget(QLabel(label))
+            combo = QComboBox()
+            setattr(self, attr, combo)
+            rh.addWidget(combo, 1)
+            fl.addWidget(row)
 
         freq_row = QWidget()
         fh = QHBoxLayout(freq_row)
@@ -1470,7 +1406,6 @@ class VdhTab(QWidget):
 
         lv.addWidget(files_grp)
 
-        # Phasemask detection
         pm_grp = QGroupBox('Phasemask detection')
         pml = QVBoxLayout(pm_grp)
 
@@ -1505,47 +1440,30 @@ class VdhTab(QWidget):
         fmh.addWidget(QLabel('Format:'))
         self._le_autopattern = QLineEdit(
             cfg.get('vdh_autopattern',
-                     self.params.get('vdh_autopattern', '_{n_spots}spots')))
+                    self.params.get('vdh_autopattern', '_{n_spots}spots')))
         fmh.addWidget(self._le_autopattern, 1)
         btn_auto = QPushButton('Auto-select')
         btn_auto.clicked.connect(lambda: self._auto_select())
         fmh.addWidget(btn_auto)
         pml.addWidget(fmt_row)
 
-        lv.addWidget(pm_grp)
+        self._pm_listbox = QListWidget()
+        self._pm_listbox.setFont(QFont('Consolas', 7))
+        self._pm_listbox.setSelectionMode(QListWidget.NoSelection)
+        self._pm_listbox.setFocusPolicy(Qt.NoFocus)
+        self._pm_listbox.setMinimumHeight(8 * 20)
+        pml.addWidget(self._pm_listbox, 1)
+
+        lv.addWidget(pm_grp, 1)
         lv.addStretch()
 
-        # ── right column ──
-        right = QWidget()
-        right.setMinimumWidth(340)
-        rv = QVBoxLayout(right)
-        rv.setContentsMargins(0, 0, 0, 0)
-
-        # Timer
-        self._timer_panel = SciTimerPanel()
-        rv.addWidget(self._timer_panel)
-
-        # RUN / STOP
-        btn_row = QWidget()
-        br = QHBoxLayout(btn_row)
-        br.setContentsMargins(0, 0, 0, 0)
-        self._btn_run = _make_run_btn(self)
-        self._btn_stop = _make_stop_btn(self)
-        br.addWidget(self._btn_run, 3)
-        br.addWidget(self._btn_stop, 1)
-        rv.addWidget(btn_row)
-        rv.addStretch()
-
         main.addWidget(left, 1)
-        main.addWidget(right, 1)
+        main.addWidget(self._build_right_panel(), 1)
 
-        # signals
-        self._btn_run.clicked.connect(self._on_run)
-        self._btn_stop.clicked.connect(self._on_stop)
         self._le_freq.textChanged.connect(self._update_preview)
         self._combo_vec.currentTextChanged.connect(self._update_preview)
+        self._combo_pm.currentTextChanged.connect(self._load_pm_lines)
 
-        # populate from config
         if cfg.get('vdh_binvec_folder'):
             self._on_folder_selected(cfg['vdh_binvec_folder'])
         if cfg.get('vdh_bin_name'):
@@ -1556,40 +1474,32 @@ class VdhTab(QWidget):
             self._combo_pm.setCurrentText(cfg['vdh_pm_name'])
         self._scan_pm_folder()
         self._update_preview()
+        self._load_pm_lines()
 
-    # -- paths ----------------------------------------------------------------
+    # -- paths --
 
     def _vec_path(self) -> str:
         folder   = self._le_folder.text()
         vec_name = self._combo_vec.currentText()
         if not folder or not vec_name:
             return ''
-        sub = self.params.get('vec_subfolder', 'VEC')
-        p = os.path.normpath(os.path.join(folder, sub, vec_name))
+        p = os.path.normpath(os.path.join(
+            folder, self.params.get('vec_subfolder', 'VEC'), vec_name))
         return p if os.path.isfile(p) else ''
 
-    # -- callbacks ------------------------------------------------------------
+    def _pm_path(self) -> str:
+        folder  = self._le_folder.text()
+        pm_name = self._combo_pm.currentText()
+        if not folder or not pm_name:
+            return ''
+        p = os.path.normpath(os.path.join(
+            folder, self.params.get('phasemasks_subfolder', 'Phasemasks'), pm_name))
+        return p if os.path.isfile(p) else ''
 
-    def _update_preview(self):
-        if self._worker:
-            return
-        try:
-            freq = float(self._le_freq.text())
-            if freq <= 0:
-                raise ValueError
-        except ValueError:
-            self._timer_panel.set_idle()
-            return
-        vec_p = self._vec_path()
-        if not vec_p:
-            self._timer_panel.set_idle()
-            return
-        try:
-            total = sync.count_vec_triggers(vec_p)
-        except Exception:
-            self._timer_panel.set_idle()
-            return
-        self._timer_panel.set_ready(total, freq)
+    # -- callbacks --
+
+    def _on_spots_detected(self, n: int):
+        self._auto_select(n)
 
     def _on_folder_selected(self, folder: str):
         self._le_folder.setText(folder)
@@ -1601,22 +1511,6 @@ class VdhTab(QWidget):
         self._combo_pm.clear()
         self._combo_pm.addItems(pm_files)
 
-    def _open_pm_folder(self):
-        open_folder(self.params.get('wavefront_folder', ''))
-
-    def _scan_pm_folder(self):
-        folder  = self.params.get('wavefront_folder', '')
-        pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
-        n = sync.count_spots_from_folder(folder, pattern)
-        if n == 0:
-            self._lbl_pm_detected.setText('0 spots found')
-            self._lbl_pm_detected.setStyleSheet('color: #FF4444;')
-            return
-        self._lbl_pm_detected.setText(
-            f'{n} spot{"s" if n > 1 else ""} detected')
-        self._lbl_pm_detected.setStyleSheet('color: #00FF00;')
-        self._auto_select(n)
-
     def _auto_select(self, n: int = None):
         if n is None:
             folder  = self.params.get('wavefront_folder', '')
@@ -1625,24 +1519,18 @@ class VdhTab(QWidget):
         if not n:
             return
         substr = self._le_autopattern.text().replace('{n_spots}', str(n))
-        for i in range(self._combo_vec.count()):
-            if substr in self._combo_vec.itemText(i):
-                self._combo_vec.setCurrentIndex(i)
-                break
-        for i in range(self._combo_pm.count()):
-            if substr in self._combo_pm.itemText(i):
-                self._combo_pm.setCurrentIndex(i)
-                break
-
-    # -- run / stop -----------------------------------------------------------
+        for combo in (self._combo_vec, self._combo_pm):
+            for i in range(combo.count()):
+                if substr in combo.itemText(i):
+                    combo.setCurrentIndex(i)
+                    break
 
     def _on_run(self):
         folder   = self._le_folder.text()
         bin_name = self._combo_bin.currentText()
         vec_name = self._combo_vec.currentText()
         if not folder or not bin_name or not vec_name:
-            QMessageBox.critical(self, 'Error',
-                                 'Select a folder, BIN and VEC file.')
+            QMessageBox.critical(self, 'Error', 'Select a folder, BIN and VEC file.')
             return
         try:
             freq_hz = float(self._le_freq.text())
@@ -1654,12 +1542,7 @@ class VdhTab(QWidget):
             return
 
         self._save_config()
-        self._freq_hz = freq_hz
-        self._btn_run.setEnabled(False)
-        self._btn_run.setText('RUNNING…')
-        self._btn_stop.setEnabled(True)
-
-        self._arm_worker(freq_hz)
+        self._start_protocol(freq_hz)
 
         def _run():
             try:
@@ -1680,86 +1563,6 @@ class VdhTab(QWidget):
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_stop(self):
-        dmd.stop(getattr(self, '_proc', None), self.params.get('film_exe', ''))
-        self.console.log('[VDH] Protocol interrupted.', 'warn')
-
-    def _arm_worker(self, freq_hz: float):
-        total = 0
-        vec_p = self._vec_path()
-        if vec_p:
-            try:
-                total = sync.count_vec_triggers(vec_p)
-            except Exception as e:
-                self.console.log(f'[VDH] Cannot read vec: {e}', 'warn')
-
-        self._total_triggers = total
-        nidaq   = self.params.get('nidaq', {})
-        device  = nidaq.get('device', 'Dev1')
-        pfi_idx = nidaq.get('pfi_clock', 0)
-        try:
-            self._counter = sync.TriggerCounter(device, pfi_idx)
-            self.console.log(
-                f'[VDH] NI-DAQ counter armed ({device}/PFI{pfi_idx})')
-        except Exception as e:
-            self._counter = None
-            self.console.log(f'[VDH] NI-DAQ counter unavailable: {e}', 'warn')
-
-        timeout = self.params.get('trigger_timeout_s', 10)
-        self._timer_panel.set_armed(total, freq_hz)
-
-        self._worker = TriggerWorker(self._counter, total, timeout)
-        self._thread = QThread()
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.trigger_update.connect(self._on_trigger_update)
-        self._worker.stim_started.connect(self._on_stim_started)
-        self._worker.stim_complete.connect(self._on_complete)
-        self._worker.stim_timeout.connect(self._on_timeout)
-        self._worker.finished.connect(self._thread.quit)
-        self._thread.start()
-
-    @Slot(int)
-    def _on_trigger_update(self, count: int):
-        self._timer_panel.update_progress(count, self._total_triggers, self._freq_hz)
-
-    @Slot()
-    def _on_stim_started(self):
-        self.console.log('[VDH] >> STIM STARTED')
-
-    @Slot()
-    def _on_complete(self):
-        self._timer_panel.set_complete()
-        self.console.log('[VDH] ■ STIM COMPLETE')
-        dmd.stop(self._proc, self.params.get('film_exe', ''))
-
-    @Slot()
-    def _on_timeout(self):
-        timeout = self.params.get('trigger_timeout_s', 10)
-        self.console.log(f'[VDH] ■ No trigger for {timeout}s — stopping', 'warn')
-        dmd.stop(self._proc, self.params.get('film_exe', ''))
-
-    @Slot()
-    def _do_cleanup(self):
-        """Runs in main thread via signal — safe to touch Qt widgets."""
-        if self._worker:
-            self._worker.stop()
-            self._worker = None
-        if self._thread and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait(2000)
-            self._thread = None
-        if self._counter:
-            self._counter.close()
-            self._counter = None
-        self._release_run()
-
-    def reset_ui(self):
-        self._btn_run.setEnabled(True)
-        self._btn_run.setText('RUN PROTOCOL')
-        self._btn_stop.setEnabled(False)
-        self._update_preview()
-
 
 # ═════════════════════════════════════════════════════════════════════════════
 # ── main application window ──────────────────────────────────────────────────
@@ -1772,8 +1575,8 @@ class PlerionApp(QMainWindow):
         self.setWindowTitle('Plerion')
         self.setMinimumSize(1100, 680)
 
-        self.params  = load_json(PARAMS_FILE, {})
-        self.config  = load_json(CONFIG_FILE, {})
+        self.params   = load_json(PARAMS_FILE, {})
+        self.config   = load_json(CONFIG_FILE, {})
         self._running = False
 
         self._build()
@@ -1818,21 +1621,22 @@ class PlerionApp(QMainWindow):
         self._tabs.addTab(self.dh_tab,  '  DH      ')
         self._tabs.addTab(self.vdh_tab, '  VDH     ')
 
-        # NI-DAQ probe
-        device = self.params.get('nidaq', {}).get('device', 'Dev1')
+        device   = self.params.get('nidaq', {}).get('device', 'Dev1')
         nidaq_ok = sync.probe_nidaq(device)
         sb = self.statusBar()
         sb.setStyleSheet(f'background: {COLOR_BG}; color: {COLOR_TEXT};')
         dot = StatusDot(FO_ON if nidaq_ok else COLOR_DIM)
         sb.addPermanentWidget(dot)
         lbl_daq = QLabel(f'NI-DAQ {device}')
-        lbl_daq.setStyleSheet(f'color: {FO_ON if nidaq_ok else COLOR_DIM}; padding-right: 6px;')
+        lbl_daq.setStyleSheet(
+            f'color: {FO_ON if nidaq_ok else COLOR_DIM}; padding-right: 6px;')
         sb.addPermanentWidget(lbl_daq)
 
         if nidaq_ok:
             self.console.log(f'NI-DAQ {device} detected.')
         else:
-            self.console.log(f'NI-DAQ {device} not found — hardware features disabled.', 'warn')
+            self.console.log(
+                f'NI-DAQ {device} not found — hardware features disabled.', 'warn')
         self.console.log('Plerion ready.')
 
     def _acquire_run(self) -> bool:
@@ -1864,46 +1668,38 @@ class PlerionApp(QMainWindow):
         vi = self.vis_tab
         d  = self.dh_tab
         v  = self.vdh_tab
-        try:
-            vis_freq = float(vi._le_freq.text() or 20)
-        except ValueError:
-            vis_freq = 20.0
-        try:
-            dh_freq = float(d._le_freq.text() or 20)
-        except ValueError:
-            dh_freq = 20.0
-        try:
-            vdh_freq = float(v._le_freq.text() or 20)
-        except ValueError:
-            vdh_freq = 20.0
+
+        def _freq(le):
+            try:
+                return float(le.text() or 20)
+            except ValueError:
+                return 20.0
+
         return {
-            'vis_binvec_folder':    vi._le_folder.text(),
-            'vis_bin_name':         vi._combo_bin.currentText(),
-            'vis_vec_name':         vi._combo_vec.currentText(),
-            'vis_freq':             vis_freq,
-            'dh_freq':              dh_freq,
-            'dh_n_spots':           d._spin_spots.value(),
-            'dh_bin_mode':          'bright' if d._rb_bright.isChecked() else 'dark',
-            'vdh_binvec_folder':    v._le_folder.text(),
-            'vdh_bin_name':         v._combo_bin.currentText(),
-            'vdh_vec_name':         v._combo_vec.currentText(),
-            'vdh_pm_name':          v._combo_pm.currentText(),
-            'vdh_freq':             vdh_freq,
-            'vdh_autopattern':      v._le_autopattern.text(),
+            'vis_binvec_folder': vi._le_folder.text(),
+            'vis_bin_name':      vi._combo_bin.currentText(),
+            'vis_vec_name':      vi._combo_vec.currentText(),
+            'vis_freq':          _freq(vi._le_freq),
+            'dh_freq':           _freq(d._le_freq),
+            'dh_n_spots':        d._spin_spots.value(),
+            'dh_bin_mode':       'bright' if d._rb_bright.isChecked() else 'dark',
+            'vdh_binvec_folder': v._le_folder.text(),
+            'vdh_bin_name':      v._combo_bin.currentText(),
+            'vdh_vec_name':      v._combo_vec.currentText(),
+            'vdh_pm_name':       v._combo_pm.currentText(),
+            'vdh_freq':          _freq(v._le_freq),
+            'vdh_autopattern':   v._le_autopattern.text(),
         }
 
     def closeEvent(self, event):
         self._save_config()
         for tab in (self.vis_tab, self.dh_tab, self.vdh_tab):
-            # Stop worker thread first
             if getattr(tab, '_worker', None):
                 tab._worker.stop()
             if getattr(tab, '_thread', None) and tab._thread.isRunning():
                 tab._thread.quit()
                 tab._thread.wait(1000)
-            # Kill film.exe
             dmd.stop(getattr(tab, '_proc', None), self.params.get('film_exe', ''))
-            # Release hardware
             if getattr(tab, '_counter', None):
                 tab._counter.close()
             if getattr(tab, '_waveform', None):
@@ -1913,7 +1709,6 @@ class PlerionApp(QMainWindow):
 
 # ── entry point ──────────────────────────────────────────────────────────────
 
-# Global registry of active film.exe procs — killed on exit/crash
 _active_procs: list = []
 
 
@@ -1928,10 +1723,11 @@ def _kill_all_procs():
 
 atexit.register(_kill_all_procs)
 
-# Handle SIGTERM / Ctrl-C
+
 def _signal_handler(sig, frame):
     _kill_all_procs()
     sys.exit(0)
+
 
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT,  _signal_handler)

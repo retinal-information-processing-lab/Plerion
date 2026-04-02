@@ -4,11 +4,11 @@
   "vis_vec_name": "Chirp_50Hz_20reps_1024x768pix.vec",
   "vis_freq": 50.0,
   "dh_freq": 20.0,
-  "dh_n_spots": 12,
+  "dh_n_spots": 8,
   "dh_bin_mode": "dark",
   "vdh_binvec_folder": "E:/VisualStim_DMD/data/binvecs/05_Victor",
   "vdh_bin_name": "Surround_disc_1200um_500off_40x_Down.bin",
-  "vdh_vec_name": "Surround_white_disc_delay_DH_12.vec",
+  "vdh_vec_name": "Surround_white_disc_delay_DH_8.vec",
   "vdh_pm_name": "StimList_12spots.txt",
   "vdh_freq": 20.0,
   "vdh_autopattern": "DH_{n_spots}"
