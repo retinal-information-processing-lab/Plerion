@@ -2,8 +2,9 @@
 (Wavefront V, not ready yet). Each implements base.Wavefront; tcp holds what every version's link shares, winproc and
 qtini what their programs may share (processes and windows of this PC, QSettings files).
 
-Vendored from Oriole TCP (E:\\Oriole-tcp, branch tcp, b6c5d60, oriole/wavefront), with the same layout, so that a fix
-found in one is ported to the other. Plerion's changes: its scripts answer PLERION (wf4.link), other clients' answers
+Vendored from Oriole TCP (E:\\Oriole-tcp, branch tcp, b6c5d60, oriole/wavefront; winproc.py from its working tree of
+2026-10-26, with window helpers not committed there yet), with the same layout, so that a fix found in one is ported
+to the other. Plerion's changes: its scripts answer PLERION (wf4.link), other clients' answers
 kept (tcp: foreign), the protocol scripts (base: prepare_script, load_script), and what only Oriole needs left out
 (phase mask generation; starting, closing and switching Wavefront; its help pages).
 """

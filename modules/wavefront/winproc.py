@@ -2,7 +2,8 @@
 
 Through the Win32 API (ctypes). Elsewhere nothing is found running (SUPPORTED False): Wavefront is started by hand.
 
-Vendored from Oriole TCP (oriole/wavefront/winproc.py), unchanged.
+Vendored from Oriole TCP (oriole/wavefront/winproc.py), unchanged: its working tree of 2026-10-26, i.e. b6c5d60 plus
+the window helpers not committed there yet (close_window, confirm: for the IV | V switch).
 """
 from __future__ import annotations
 
