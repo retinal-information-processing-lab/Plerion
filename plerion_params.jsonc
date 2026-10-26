@@ -7,8 +7,11 @@
     "pfi_clock":  0         // PFI terminal receiving the DMD trigger TTL
   },
 
-  // ── WaveFront IV ────────────────────────────────────────────────────────────
-  "wfd_script_dir": "E:\\wfdIV_20241023\\script",  // WaveFront IV JS watch folder
+  // ── Wavefront (SLM, driven over its TCP server) ─────────────────────────────
+  "wavefront":          "IV",                                  // Wavefront driven over TCP: "IV" ("V" not ready yet)
+  "wfd_root":           "E:\\wfdIV_20261022",                  // Wavefront IV install: wfdIV.exe, script (Tcp server tick), GeneratedPhasemasks
+  "wfd5_root":          "E:\\WavefrontV\\wfdV-260323-b407e2c", // Wavefront V install (for the IV | V switch to come)
+  "slm_load_timeout_s": 2,                                     // A mask load not answered within this: failed (logged, the protocol goes on)
 
   // ── Arduino ─────────────────────────────────────────────────────────────────
   "arduino_slm_baud": 128000,  // Arduino SLM baud (sendPeriodOnTrig sketch)
@@ -29,8 +32,8 @@
   // ── Trigger ─────────────────────────────────────────────────────────────────
   "trigger_timeout_s": 10, // Seconds without trigger after stim start before auto-stop
 
-  // ── WaveFront generated phasemasks (spot detection) ─────────────────────────
-  "wavefront_folder":  "E:\\wfdIV_20241023\\GeneratedPhasemasks", // Folder where WaveFront IV writes generated PNGs
+  // ── Phase masks (spot detection, masks of the order files) ──────────────────
+  "experiment_drive":  "D:\\",                                  // Where the phase masks folder dialog opens (Oriole TCP stores them in <experiment>\Phasemasks)
   "wavefront_pattern": "Pattern{n}_000.algoPhp.png",            // Filename template for spot detection — {n} is the spot index
 
   // ── VDH ─────────────────────────────────────────────────────────────────────

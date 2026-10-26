@@ -8,9 +8,13 @@ Tabs:
   Visual — DMD-only stimulation
   DH     — digital holography simplified mode
   VDH    — full experiment mode (DMD + NI-DAQ + SLM)
+
+Plerion TCP: the SLM's phase masks are shown by Wavefront over its TCP server, one per SLM trigger of the vec
+(modules/slm.py, modules/wavefront), as Oriole TCP drives it.
 """
 
 import atexit
+import ntpath
 import os
 import signal
 import sys
@@ -36,7 +40,7 @@ from PySide6.QtGui import (
 from jsonc_parser.parser import JsoncParser
 
 sys.path.insert(0, os.path.dirname(__file__))
-from modules import dmd, sync, slm
+from modules import dmd, sync, slm, wavefront
 
 # ── constants ────────────────────────────────────────────────────────────────
 
@@ -52,6 +56,8 @@ FO_OFF = '#0D2A0D'
 FO_DIM = '#1A5A1A'
 FO_MID = '#3A8A3A'
 FO_ON  = '#4AFC4A'
+
+TONES = {'ok': FO_ON, 'warn': '#FFD700', 'error': '#FF4444', 'dim': COLOR_DIM}   # slm.SlmDriver.status()
 
 PARAMS_FILE = os.path.join(os.path.dirname(__file__), 'plerion_params.jsonc')
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'plerion_config.jsonc')
@@ -378,18 +384,21 @@ class IndicatorDot(QWidget):
         super().__init__(parent)
         self._mode   = mode
         self._active = False
+        self._error  = False
         self.setFixedSize(40, 40)
         self._flash_timer = QTimer(self)
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(self._dim)
 
-    def flash(self, duration_ms: int = 200):
+    def flash(self, duration_ms: int = 200, error: bool = False):
         self._active = True
+        self._error  = error
         self.update()
         self._flash_timer.start(duration_ms)
 
     def set_active(self, active: bool):
         self._active = active
+        self._error  = False
         self.update()
 
     def _dim(self):
@@ -406,7 +415,10 @@ class IndicatorDot(QWidget):
         p.end()
 
     def _draw_phasemask(self, p: QPainter):
-        color = QColor(FO_ON) if self._active else QColor(FO_OFF)
+        if self._active and self._error:
+            color = QColor('#FF4444')
+        else:
+            color = QColor(FO_ON) if self._active else QColor(FO_OFF)
         p.setPen(QPen(color, 2))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(4, 4, 32, 32)
@@ -802,6 +814,73 @@ class VisualTab(QWidget):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# ── HoloShared — what DH and VDH share ───────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+
+class HoloShared(QObject):
+    """What the DH and VDH tabs share: the SLM driver (one connection to Wavefront, one script at a time) and the
+    session's phase masks folder, where the masks of the order files are looked for by name (Oriole TCP stores them
+    in <experiment>\\Phasemasks).
+
+    Also the driver's view: its log goes to the console, its state to the status bar (state_changed), its protocol
+    news to the tab whose protocol uses the SLM (run_tab).
+    """
+
+    folder_changed = Signal(str)
+    state_changed  = Signal()
+
+    def __init__(self, console: ConsoleLog, wf, params: dict, picked: str):
+        super().__init__()
+        self.console = console
+        self.picked  = picked                   # the folder chosen ('': none, the one Wavefront saves in is used)
+        self.driver  = slm.SlmDriver(wf, self, float(params.get('slm_load_timeout_s', 2)))
+        self.folder  = picked or slm.default_mask_folder(wf)
+        self.run_tab = None
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(1000)
+        self._watch_timer.timeout.connect(self.driver.watch)
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(100)
+        self._poll_timer.timeout.connect(self._poll)
+
+    def start(self):
+        self.driver.watch()
+        self._watch_timer.start()
+        self._poll_timer.start()
+
+    def close(self):
+        self._watch_timer.stop()
+        self._poll_timer.stop()
+        self.driver.close()
+
+    def set_folder(self, folder: str):
+        self.picked = self.folder = folder
+        self.folder_changed.emit(folder)
+
+    def _poll(self):
+        self.driver.poll()
+        interval = 10 if self.driver.active else 100    # a protocol: answers read at once, load latencies measured
+        if self._poll_timer.interval() != interval:
+            self._poll_timer.setInterval(interval)
+
+    # -- the driver's view --
+
+    def log(self, text: str, level: str = 'info'):
+        self.console.log(text, level)
+
+    def wavefront_changed(self):
+        self.state_changed.emit()
+
+    def slm_armed(self, ok: bool, why: str):
+        if self.run_tab is not None:
+            self.run_tab._on_slm_armed(ok, why)
+
+    def slm_loaded(self, event: int, k: int, ok: bool, ms, late: bool):
+        if self.run_tab is not None:
+            self.run_tab._on_slm_loaded(event, k, ok, ms, late)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # ── _HoloTabBase — shared logic for DH and VDH tabs ──────────────────────────
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -810,17 +889,18 @@ class _HoloTabBase(QWidget):
 
     Subclasses must implement:
       _build()      — full widget layout; must create self._pm_listbox and
-                      self._le_freq, then call self._build_right_panel()
+                      self._le_freq, add self._build_mask_folder_row(),
+                      then call self._build_right_panel()
       _vec_path()   — return absolute VEC path or ''
       _pm_path()    — return absolute phasemask order file path or ''
-      _on_run()     — validate inputs, call _start_protocol(), start DMD thread
+      _on_run()     — validate inputs, call _run_protocol() with the DMD thread
     """
 
     _tab_prefix      = ''
     _request_cleanup = Signal()
 
     def __init__(self, console: ConsoleLog, params: dict, config: dict,
-                 save_config, acquire_run, release_run):
+                 save_config, acquire_run, release_run, holo: HoloShared):
         super().__init__()
         self.console      = console
         self.params       = params
@@ -828,6 +908,7 @@ class _HoloTabBase(QWidget):
         self._save_config = save_config
         self._acquire_run = acquire_run
         self._release_run = release_run
+        self._holo        = holo
         self._proc        = None
         self._worker      = None
         self._thread      = None
@@ -838,12 +919,17 @@ class _HoloTabBase(QWidget):
         self._last_processed  = 0
         self._vec_col_slm     = []
         self._vec_col_shutter = []
-        self._pm_lines        = []
-        self._pm_index        = 0
+        self._pm_lines        = []     # the order file's masks, as written
+        self._masks           = []     # ... each found (Path) or not (None)
+        self._missing         = []     # file names of the masks found nowhere
+        self._pm_index        = -1     # the row of the mask on the SLM
+        self._slm_events      = {}     # vec frame -> SLM trigger number (1, 2, ...)
+        self._arming          = False  # RUN pressed, the SLM not armed yet
+        self._launch          = None   # starts the DMD thread once the SLM is armed
         self._shutter_open    = False
-        self._slm = slm.SLMClient(params.get('wfd_script_dir', ''))
         self._request_cleanup.connect(self._do_cleanup)
         self._build()
+        holo.folder_changed.connect(self._on_mask_folder_changed)
 
     # ── abstract interface ────────────────────────────────────────────────────
 
@@ -907,19 +993,60 @@ class _HoloTabBase(QWidget):
 
         return right
 
+    # ── phase masks folder (shared by DH and VDH) ────────────────────────────
+
+    def _build_mask_folder_row(self) -> QWidget:
+        """The session's phase masks folder: where the order file's masks are looked for by name."""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(QLabel('Phase masks:'))
+        self._lbl_pm_folder = ElidedLabel(self._holo.folder or '—')
+        self._lbl_pm_folder.setStyleSheet(f'color: {COLOR_DIM};')
+        self._lbl_pm_folder.setToolTip(
+            "The session's phase masks (Oriole TCP stores them in <experiment>\\Phasemasks). Each mask of the order "
+            "file is looked for here by file name, then at the path written in the order file.")
+        h.addWidget(self._lbl_pm_folder, 1)
+        btn_pick = QPushButton('…')
+        btn_pick.setFixedWidth(30)
+        btn_pick.clicked.connect(self._pick_mask_folder)
+        h.addWidget(btn_pick)
+        btn_open = QPushButton('Open')
+        btn_open.setFixedWidth(50)
+        btn_open.clicked.connect(lambda: open_folder(self._holo.folder))
+        h.addWidget(btn_open)
+        return row
+
+    def _pick_mask_folder(self):
+        if self._holo.run_tab is not None:
+            self.console.log(f'{self._tab_prefix} Not during a protocol: the phase masks folder is in use.', 'warn')
+            return
+        start = self._holo.picked or self.params.get('experiment_drive', '')
+        path = QFileDialog.getExistingDirectory(self, "Phase masks folder (the session's Phasemasks)", start)
+        if path:
+            self._holo.set_folder(os.path.normpath(path))
+
+    @Slot(str)
+    def _on_mask_folder_changed(self, folder: str):
+        self._lbl_pm_folder.setText(folder or '—')
+        self._scan_pm_folder()
+        self._load_pm_lines()
+
     # ── phasemask list ────────────────────────────────────────────────────────
 
     def _load_pm_lines(self):
+        """The order file's masks, each looked for by name in the phase masks folder, then at the path written in
+        the order file; the ones found nowhere are shown in red."""
         pm_path = self._pm_path()
         self._pm_listbox.clear()
-        self._pm_lines = []
+        self._pm_lines, self._masks, self._missing = [], [], []
+        self._pm_index = -1
         if not os.path.isfile(pm_path):
             return
-        with open(pm_path, 'r') as f:
-            self._pm_lines = f.read().splitlines()
+        self._pm_lines = slm.read_order_file(pm_path)
+        self._masks, self._missing = slm.resolve_masks(self._pm_lines, self._holo.folder)
         for line in self._pm_lines:
-            self._pm_listbox.addItem(os.path.basename(line))
-        self._pm_index = 0
+            self._pm_listbox.addItem(ntpath.basename(line))
         self._update_pm_highlight()
 
     def _update_pm_highlight(self):
@@ -930,14 +1057,15 @@ class _HoloTabBase(QWidget):
                 item.setForeground(QColor(FO_BG))
             else:
                 item.setBackground(QColor(COLOR_CARD))
-                item.setForeground(QColor(COLOR_DIM))
+                missing = i < len(self._masks) and self._masks[i] is None
+                item.setForeground(QColor('#FF4444' if missing else COLOR_DIM))
         if 0 <= self._pm_index < self._pm_listbox.count():
             self._pm_listbox.scrollToItem(self._pm_listbox.item(self._pm_index))
 
     # ── spot detection ────────────────────────────────────────────────────────
 
     def _scan_pm_folder(self):
-        folder  = self.params.get('wavefront_folder', '')
+        folder  = self._holo.folder
         pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
         n = sync.count_spots_from_folder(folder, pattern)
         if n == 0:
@@ -981,24 +1109,18 @@ class _HoloTabBase(QWidget):
     def _on_trigger_update(self, count: int):
         self._timer_panel.update_progress(count, self._total_triggers, self._freq_hz)
 
-        slm_col = self._vec_col_slm
         sht_col = self._vec_col_shutter
-        new_pm  = 0
+        events  = []
         last_shutter = self._shutter_open
 
-        for i in range(self._last_processed, min(count, len(slm_col))):
-            if slm_col[i] == 1:
-                new_pm += 1
+        for i in range(self._last_processed, min(count, len(self._vec_col_slm))):
+            if i in self._slm_events:
+                events.append(self._slm_events[i])
             if i < len(sht_col):
                 last_shutter = bool(sht_col[i])
 
-        if new_pm > 0:
-            self._pm_index = min(self._pm_index + new_pm, len(self._pm_lines) - 1)
-            self._ind_pm.flash()
-            self._update_pm_highlight()
-            if 0 <= self._pm_index < len(self._pm_lines):
-                if not self._slm.send_mask(self._pm_lines[self._pm_index]):
-                    self.console.log('[SLM] send failed — script folder unreachable', 'warn')
+        for event in events:        # several at once: the driver sends the first, keeps the latest waiting
+            self._holo.driver.show(event)
 
         if last_shutter != self._shutter_open:
             self._shutter_open = last_shutter
@@ -1006,28 +1128,111 @@ class _HoloTabBase(QWidget):
 
         self._last_processed = count
 
+    def _on_slm_loaded(self, event: int, k: int, ok: bool, ms, late: bool):
+        """The mask of an SLM trigger loaded (its row highlighted), or not (a red flash: the SLM still shows the
+        previous mask)."""
+        if ok:
+            self._pm_index = k
+            self._update_pm_highlight()
+            self._ind_pm.flash()
+        else:
+            self._ind_pm.flash(1000, error=True)
+
+    # ── RUN: the SLM armed first ──────────────────────────────────────────────
+
+    def _run_protocol(self, freq_hz: float, launch):
+        """RUN, for DH and VDH. When the protocol shows phase masks the SLM is armed first (Wavefront answering,
+        every mask found), then NI-DAQ and film.exe (``launch``: starts the DMD thread)."""
+        vec_p = self._vec_path()
+        slm_col, sht_col = sync.read_vec_columns(vec_p) if vec_p else ([], [])
+        edges = sync.rising_edges(slm_col)
+        self._load_pm_lines()                       # the masks as they are now (made since the file was chosen?)
+        uses_slm = bool(edges) and bool(self._pm_lines)
+        if uses_slm:
+            why = self._slm_problem()
+            if why:
+                self.console.log(f'{self._tab_prefix} RUN refused: {why}', 'error')
+                return
+
+        if not self._acquire_run():
+            self.console.log(f'{self._tab_prefix} Film.exe already running.', 'warn')
+            return
+
+        self._save_config()
+        self._freq_hz = freq_hz
+        self._launch  = launch
+        self._vec_col_slm, self._vec_col_shutter = slm_col, sht_col
+        self._slm_events = {frame: e for e, frame in enumerate(edges, 1)} if uses_slm else {}
+        if not uses_slm:
+            if edges:
+                self.console.log(f'{self._tab_prefix} No phase mask order file: the SLM will not change '
+                                 f'({len(edges)} SLM triggers in the vec)', 'warn')
+            elif self._pm_lines:
+                self.console.log(f'{self._tab_prefix} No SLM trigger in the vec: the phase masks are not shown',
+                                 'warn')
+            self._go()
+            return
+
+        n_masks = len(self._masks)
+        wraps   = ' (the list wraps)' if len(edges) > n_masks else ''
+        level   = 'info' if n_masks <= len(edges) <= n_masks + 1 else 'warn'
+        self.console.log(f'{self._tab_prefix} {len(edges)} SLM triggers for {n_masks} phase masks{wraps}', level)
+        self._arming = True
+        self._holo.run_tab = self
+        self._btn_run.setEnabled(False)
+        self._btn_run.setText('ARMING SLM…')
+        self._btn_stop.setEnabled(True)
+        self._holo.driver.arm(self._masks, sync.slm_budgets(slm_col, sht_col, freq_hz))
+
+    def _slm_problem(self) -> str:
+        """Why the SLM cannot be armed for this protocol ('' when it can): Wavefront not running or busy, a mask of
+        the order file found nowhere."""
+        why = self._holo.driver.not_ready()
+        if why:
+            return why
+        if self._missing:
+            names = list(dict.fromkeys(self._missing))
+            shown = ', '.join(names[:5]) + (f' and {len(names) - 5} more' if len(names) > 5 else '')
+            return (f'{len(names)} phase mask{"s" if len(names) > 1 else ""} of the order file not found ({shown}). '
+                    f'Looked for in the phase masks folder ({self._holo.folder or "none chosen"}), then at the paths '
+                    f"written in the order file: pick the session's phase masks folder (…)")
+        return ''
+
+    def _on_slm_armed(self, ok: bool, why: str):
+        if not self._arming:
+            return
+        self._arming = False
+        if not ok:
+            self._holo.run_tab = None
+            self.console.log(f'{self._tab_prefix} RUN refused: the SLM could not be armed: {why}', 'error')
+            self._release_run()
+            return
+        self.console.log(f'{self._tab_prefix} SLM armed: {len(self._masks)} phase masks, Wavefront ready')
+        self._go()
+
+    def _go(self):
+        """NI-DAQ armed, then film.exe launched."""
+        self._start_protocol(self._freq_hz)
+        self._launch()
+
     # ── protocol setup ────────────────────────────────────────────────────────
 
     def _start_protocol(self, freq_hz: float):
-        """Reset tracking state, load vectors, arm waveform output and trigger counter."""
+        """Reset tracking state, arm waveform output and trigger counter (vec columns read at RUN)."""
         self._freq_hz        = freq_hz
         self._last_processed = 0
-        self._pm_index       = 0
+        self._pm_index       = -1
         self._shutter_open   = False
+        self._update_pm_highlight()
         self._btn_run.setEnabled(False)
         self._btn_run.setText('RUNNING…')
         self._btn_stop.setEnabled(True)
 
-        vec_p = self._vec_path()
-        if vec_p:
-            self._vec_col_slm, self._vec_col_shutter = sync.read_vec_columns(vec_p)
-            n_pm  = sum(self._vec_col_slm)
-            n_sht = sum(self._vec_col_shutter)
+        if self._vec_col_slm:
             self.console.log(
                 f'{self._tab_prefix} Vec loaded: {len(self._vec_col_slm)} triggers, '
-                f'{n_pm} phasemask events, {n_sht} shutter-open events')
-
-        self._load_pm_lines()
+                f'{len(sync.rising_edges(self._vec_col_slm))} SLM triggers, '
+                f'{len(sync.rising_edges(self._vec_col_shutter))} shutter openings')
 
         nidaq   = self.params.get('nidaq', {})
         device  = nidaq.get('device', 'Dev1')
@@ -1088,6 +1293,13 @@ class _HoloTabBase(QWidget):
     # ── stim lifecycle ────────────────────────────────────────────────────────
 
     def _on_stop(self):
+        if self._arming:                        # the SLM not armed yet: nothing else started
+            self._arming = False
+            self._holo.driver.cancel()
+            self._holo.run_tab = None
+            self.console.log(f'{self._tab_prefix} Protocol interrupted while the SLM was being armed.', 'warn')
+            self._release_run()
+            return
         dmd.stop(getattr(self, '_proc', None), self.params.get('film_exe', ''))
         self.console.log(f'{self._tab_prefix} Protocol interrupted.', 'warn')
 
@@ -1123,6 +1335,9 @@ class _HoloTabBase(QWidget):
         if self._waveform:
             self._waveform.close()
             self._waveform = None
+        if self._holo.run_tab is self:
+            self._holo.driver.finish()
+            self._holo.run_tab = None
         self._ind_laser.set_active(False)
         self._shutter_open = False
         self._release_run()
@@ -1131,7 +1346,7 @@ class _HoloTabBase(QWidget):
         self._btn_run.setEnabled(True)
         self._btn_run.setText('RUN PROTOCOL')
         self._btn_stop.setEnabled(False)
-        self._pm_index     = 0
+        self._pm_index     = -1
         self._shutter_open = False
         self._ind_laser.set_active(False)
         self._update_pm_highlight()
@@ -1215,18 +1430,7 @@ class DhTab(_HoloTabBase):
         holo_grp = QGroupBox('Holography')
         pml = QVBoxLayout(holo_grp)
 
-        pm_folder_row = QWidget()
-        pfh = QHBoxLayout(pm_folder_row)
-        pfh.setContentsMargins(0, 0, 0, 0)
-        self._lbl_pm_folder = ElidedLabel(self.params.get('wavefront_folder', '—'))
-        self._lbl_pm_folder.setStyleSheet(f'color: {COLOR_DIM};')
-        pfh.addWidget(self._lbl_pm_folder, 1)
-        btn_open_pm = QPushButton('Open')
-        btn_open_pm.setMinimumWidth(60)
-        btn_open_pm.clicked.connect(
-            lambda: open_folder(self.params.get('wavefront_folder', '')))
-        pfh.addWidget(btn_open_pm)
-        pml.addWidget(pm_folder_row)
+        pml.addWidget(self._build_mask_folder_row())
 
         det_row = QWidget()
         drh = QHBoxLayout(det_row)
@@ -1326,13 +1530,6 @@ class DhTab(_HoloTabBase):
         n_spots  = self._spin_spots.value()
         bin_mode = 'bright' if self._rb_bright.isChecked() else 'dark'
 
-        if not self._acquire_run():
-            self.console.log('[DH] Film.exe already running.', 'warn')
-            return
-
-        self._save_config()
-        self._start_protocol(freq_hz)
-
         def _run():
             try:
                 self._proc = dmd.run_dh(
@@ -1349,7 +1546,7 @@ class DhTab(_HoloTabBase):
                     _active_procs.remove(self._proc)
                 self._request_cleanup.emit()
 
-        threading.Thread(target=_run, daemon=True).start()
+        self._run_protocol(freq_hz, lambda: threading.Thread(target=_run, daemon=True).start())
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1409,18 +1606,7 @@ class VdhTab(_HoloTabBase):
         pm_grp = QGroupBox('Phasemask detection')
         pml = QVBoxLayout(pm_grp)
 
-        pm_folder_row = QWidget()
-        pfh = QHBoxLayout(pm_folder_row)
-        pfh.setContentsMargins(0, 0, 0, 0)
-        self._lbl_pm_folder = ElidedLabel(self.params.get('wavefront_folder', '—'))
-        self._lbl_pm_folder.setStyleSheet(f'color: {COLOR_DIM};')
-        pfh.addWidget(self._lbl_pm_folder, 1)
-        btn_open = QPushButton('Open')
-        btn_open.setFixedWidth(50)
-        btn_open.clicked.connect(
-            lambda: open_folder(self.params.get('wavefront_folder', '')))
-        pfh.addWidget(btn_open)
-        pml.addWidget(pm_folder_row)
+        pml.addWidget(self._build_mask_folder_row())
 
         det_row = QWidget()
         drh = QHBoxLayout(det_row)
@@ -1513,7 +1699,7 @@ class VdhTab(_HoloTabBase):
 
     def _auto_select(self, n: int = None):
         if n is None:
-            folder  = self.params.get('wavefront_folder', '')
+            folder  = self._holo.folder
             pattern = self.params.get('wavefront_pattern', 'Pattern{n}_000.algoPhp.png')
             n = sync.count_spots_from_folder(folder, pattern)
         if not n:
@@ -1537,12 +1723,6 @@ class VdhTab(_HoloTabBase):
         except ValueError:
             QMessageBox.critical(self, 'Error', 'Invalid frequency.')
             return
-        if not self._acquire_run():
-            self.console.log('[VDH] Film.exe already running.', 'warn')
-            return
-
-        self._save_config()
-        self._start_protocol(freq_hz)
 
         def _run():
             try:
@@ -1561,7 +1741,7 @@ class VdhTab(_HoloTabBase):
                     _active_procs.remove(self._proc)
                 self._request_cleanup.emit()
 
-        threading.Thread(target=_run, daemon=True).start()
+        self._run_protocol(freq_hz, lambda: threading.Thread(target=_run, daemon=True).start())
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1572,12 +1752,14 @@ class PlerionApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Plerion')
+        self.setWindowTitle('Plerion TCP')
         self.setMinimumSize(1100, 680)
 
         self.params   = load_json(PARAMS_FILE, {})
         self.config   = load_json(CONFIG_FILE, {})
         self._running = False
+        wf_cls        = wavefront.version(self.params.get('wavefront', wavefront.DEFAULT))
+        self.wf       = wf_cls(self.params.get(wf_cls.ROOT_KEY, ''))
 
         self._build()
 
@@ -1607,15 +1789,18 @@ class PlerionApp(QMainWindow):
         self.console.setMaximumHeight(260)
         vbox.addWidget(self.console)
 
+        self.holo = HoloShared(self.console, self.wf, self.params,
+                               self.config.get('holo_mask_folder', ''))
+
         self.vis_tab = VisualTab(self.console, self.params, self.config,
                                   self._save_config, self._acquire_run,
                                   self._release_run)
         self.dh_tab  = DhTab(self.console, self.params, self.config,
                               self._save_config, self._acquire_run,
-                              self._release_run)
+                              self._release_run, self.holo)
         self.vdh_tab = VdhTab(self.console, self.params, self.config,
                                self._save_config, self._acquire_run,
-                               self._release_run)
+                               self._release_run, self.holo)
 
         self._tabs.addTab(self.vis_tab, '  Visual  ')
         self._tabs.addTab(self.dh_tab,  '  DH      ')
@@ -1632,12 +1817,36 @@ class PlerionApp(QMainWindow):
             f'color: {FO_ON if nidaq_ok else COLOR_DIM}; padding-right: 6px;')
         sb.addPermanentWidget(lbl_daq)
 
+        self._dot_wf = StatusDot(COLOR_DIM)
+        sb.addPermanentWidget(self._dot_wf)
+        self._lbl_wf = QLabel(self.wf.NAME)
+        sb.addPermanentWidget(self._lbl_wf)
+        btn_check = QPushButton('Check')
+        btn_check.setToolTip(f"Ping {self.wf.NAME}: does it run Plerion's scripts? "
+                             f"(if not, Plerion ticks its {self.wf.SERVER})")
+        btn_check.clicked.connect(self.holo.driver.check)
+        sb.addPermanentWidget(btn_check)
+        self.holo.state_changed.connect(self._show_wavefront)
+
         if nidaq_ok:
             self.console.log(f'NI-DAQ {device} detected.')
         else:
             self.console.log(
                 f'NI-DAQ {device} not found — hardware features disabled.', 'warn')
         self.console.log('Plerion ready.')
+
+        self.holo.start()
+        if self.wf.supported and self.holo.driver.folder is None:
+            problem = self.wf.install_problem()
+            self.console.log(f'{self.wf.NAME} is not running: start it (Oriole TCP does) before a DH or VDH '
+                             f'protocol' + (f' ({problem})' if problem else ''), 'warn')
+
+    def _show_wavefront(self):
+        text, tone = self.holo.driver.status()
+        color = TONES[tone]
+        self._dot_wf.set_color(color)
+        self._lbl_wf.setText(text)
+        self._lbl_wf.setStyleSheet(f'color: {color}; padding-right: 6px;')
 
     def _acquire_run(self) -> bool:
         if self._running:
@@ -1689,6 +1898,7 @@ class PlerionApp(QMainWindow):
             'vdh_pm_name':       v._combo_pm.currentText(),
             'vdh_freq':          _freq(v._le_freq),
             'vdh_autopattern':   v._le_autopattern.text(),
+            'holo_mask_folder':  self.holo.picked,
         }
 
     def closeEvent(self, event):
@@ -1704,6 +1914,7 @@ class PlerionApp(QMainWindow):
                 tab._counter.close()
             if getattr(tab, '_waveform', None):
                 tab._waveform.close()
+        self.holo.close()
         event.accept()
 
 

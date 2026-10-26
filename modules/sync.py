@@ -2,6 +2,7 @@
 # TriggerCounter: counts rising edges on a PFI terminal (ctr0).
 # count_vec_triggers: returns the number of trigger lines in a .vec file.
 # count_spots_from_folder: infers n_spots from generated phasemask filenames.
+# rising_edges / slm_budgets: the SLM triggers of a vec, and the time each leaves before the shutter opens.
 
 import os
 import re
@@ -76,6 +77,26 @@ def read_vec_columns(vec_path: str) -> tuple:
     except Exception:
         pass
     return col0, col3
+
+
+def rising_edges(col: list) -> list:
+    """Return the frames (0-based) where a vec column goes from 0 to 1; frame 0 counts when it starts at 1."""
+    return [i for i, v in enumerate(col) if v and (i == 0 or not col[i - 1])]
+
+
+def slm_budgets(slm_col: list, shutter_col: list, freq_hz: float) -> list:
+    """Return, for each SLM rising edge, the seconds until the next shutter rising edge (the time Wavefront has to
+    show the edge's mask); inf when the shutter does not open again."""
+    opens = rising_edges(shutter_col)
+    budgets, j = [], 0
+    for frame in rising_edges(slm_col):
+        while j < len(opens) and opens[j] < frame:
+            j += 1
+        if j < len(opens) and freq_hz > 0:
+            budgets.append((opens[j] - frame) / freq_hz)
+        else:
+            budgets.append(float('inf'))
+    return budgets
 
 
 class WaveformOutput:
